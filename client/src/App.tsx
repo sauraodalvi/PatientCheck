@@ -7,7 +7,7 @@ import {
 import ClaimTable, { ClaimElement, ChatMessage, ElementVersion } from './components/ClaimTable';
 import DiffView from './components/DiffView';
 import ExportWarningModal, { getIssues } from './components/ExportWarningModal';
-import axios from 'axios';
+import api from './api';
 import Joyride, { Step } from 'react-joyride';
 
 const STORAGE_KEY = 'lumenci_charts_v2';
@@ -310,7 +310,7 @@ const App: React.FC = () => {
         if (apiKey) formData.append('apiKey', apiKey);
 
         try {
-            const res = await axios.post('/api/upload', formData, {
+            const res = await api.post('/api/upload', formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data',
                     'X-Gemini-API-Key': apiKey || ''
@@ -343,7 +343,7 @@ const App: React.FC = () => {
         const formData = new FormData();
         formData.append('file', file);
         try {
-            const res = await axios.post('/api/upload-context', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+            const res = await api.post('/api/upload-context', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
             updateChart(activeChartId, c => ({
                 ...c,
                 contextDocs: [...c.contextDocs.filter(d => d.name !== res.data.doc.name), res.data.doc]
@@ -394,7 +394,7 @@ const App: React.FC = () => {
                 content: m.content
             }));
 
-            const res = await axios.post('/api/refine', {
+            const res = await api.post('/api/refine', {
                 elementId: selectedElementId,
                 element: currentEl.element,
                 evidence: currentEl.evidence,
@@ -531,7 +531,7 @@ const App: React.FC = () => {
         setIsExporting(true);
         try {
             console.log('Starting DOCX export for:', activeChart.title);
-            const res = await axios.post('/api/export', {
+            const res = await api.post('/api/export', {
                 title: activeChart.title,
                 elements: activeChart.elements
             }, {
@@ -573,7 +573,7 @@ const App: React.FC = () => {
         setIsUploading(true);
         try {
             // Use the specialized test-inject route for perfect demo data
-            const res = await axios.post('/api/test-inject');
+            const res = await api.post('/api/test-inject');
 
             const newChart: Chart = {
                 id: `demo_${Date.now()}`,
