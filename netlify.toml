@@ -6,26 +6,25 @@
 [functions]
   directory = "../netlify/functions"
   node_bundler = "esbuild"
-  included_files = ["../netlify/functions/**"]
 
 [[redirects]]
   from   = "/api/refine"
-  to     = "/.netlify/functions/api/refine"
+  to     = "/.netlify/functions/refine"
   status = 200
 
 [[redirects]]
   from   = "/api/export"
-  to     = "/.netlify/functions/api/export"
+  to     = "/.netlify/functions/export"
   status = 200
 
 [[redirects]]
   from   = "/api/upload"
-  to     = "/.netlify/functions/api/upload"
+  to     = "/.netlify/functions/upload"
   status = 200
 
 [[redirects]]
   from   = "/api/upload-context"
-  to     = "/.netlify/functions/api/upload-context"
+  to     = "/.netlify/functions/upload-context"
   status = 200
 
 [[redirects]]
