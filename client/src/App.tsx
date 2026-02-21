@@ -572,13 +572,49 @@ const App: React.FC = () => {
     const handleDemoLoad = async () => {
         setIsUploading(true);
         try {
-            // Use the specialized test-inject route for perfect demo data
-            const res = await api.post('/api/test-inject');
+            // Demo data is fully client-side — no backend needed
+            const demoElements = [
+                {
+                    id: '1.a',
+                    element: 'A temperature measurement system comprising a digital sensor array configured to detect ambient temperature with accuracy of ±0.1°C or better.',
+                    evidence: 'NexaTherm TechSpec v4.2 §3.1: "The NexaTherm Pro incorporates a 16-element MEMS thermopile array (Model NXT-T16) providing ambient temperature accuracy of ±0.05°C across -10°C to +50°C operating range."',
+                    reasoning: "NexaTherm's 16-element MEMS thermopile array directly satisfies the \"digital sensor array\" limitation. The documented ±0.05°C accuracy exceeds the claimed ±0.1°C threshold. Literal infringement clearly established under plain-meaning construction.",
+                    confidence: 95, flags: [], versions: [], chatHistory: []
+                },
+                {
+                    id: '1.b',
+                    element: 'A wireless communication module implementing IEEE 802.15.4 protocol for mesh network topology support with unicast and multicast addressing.',
+                    evidence: 'API Reference v3.0 §7.3: "Radio: IEEE 802.15.4-2015 compliant 2.4GHz transceiver (EFR32MG21 SoC). Supports Thread mesh networking protocol. Maximum mesh depth: 16 nodes. Unicast and multicast addressing supported per RFC 4944."',
+                    reasoning: 'NexaTherm has wireless. This probably meets the claim element for wireless communication since the product connects wirelessly. The IEEE standard requirement may be satisfied.',
+                    confidence: 55, flags: ['Reasoning uses hedging language ("probably meets", "may be satisfied") — needs technical rewrite'], versions: [], chatHistory: []
+                },
+                {
+                    id: '1.c',
+                    element: 'A machine learning inference engine trained on historical occupancy data and user behavioural patterns to predict and pre-adjust temperature setpoints.',
+                    evidence: 'NexaTherm.com marketing page: "Smart AI technology personalizes your comfort. The NexaTherm learns your schedule and adjusts automatically for the perfect temperature every time."',
+                    reasoning: "NexaTherm's smart technology appears to use AI that learns patterns, which may satisfy the machine learning limitation of the claim. The product adjusts automatically suggesting some form of prediction.",
+                    confidence: 25, flags: ['Evidence is marketing copy only — no technical specification', 'Reasoning uses hedging language — needs technical evidence'], versions: [], chatHistory: []
+                },
+                {
+                    id: '1.d',
+                    element: 'A humidity sensor configured to measure relative humidity with accuracy of ±2% RH or better across a range of 10% to 90% relative humidity.',
+                    evidence: '',
+                    reasoning: '',
+                    confidence: 0, flags: ['No evidence mapped — element is unsupported'], versions: [], chatHistory: []
+                },
+                {
+                    id: '1.e',
+                    element: 'An occupancy detection module comprising a passive infrared sensor with a detection range of at least 5 meters and a field of view of at least 90 degrees.',
+                    evidence: '[CONFLICTING SOURCES] Source A (TechSpec v4.2 §5.1): PIR range = 8 meters, 120° FOV | Source B (Datasheet v2.0 §5.1): PIR range = 3 meters, 90° FOV',
+                    reasoning: 'Evidence conflict prevents definitive reasoning. If 8m range applies (Source A): literal infringement established — exceeds ≥5m threshold. If 3m range applies (Source B): infringement NOT established.',
+                    confidence: 40, flags: ['Conflicting evidence — two sources give different PIR range values. Must resolve before mapping.'], versions: [], chatHistory: []
+                }
+            ];
 
             const newChart: Chart = {
                 id: `demo_${Date.now()}`,
                 title: 'Demo Claim Chart',
-                elements: res.data.elements,
+                elements: demoElements,
                 contextDocs: [],
                 createdAt: new Date().toISOString()
             };
@@ -589,7 +625,7 @@ const App: React.FC = () => {
             setRunTour(true);
         } catch (err) {
             console.error('Demo load failed:', err);
-            alert('Failed to load demo document.');
+            alert('Failed to load demo.');
         } finally {
             setIsUploading(false);
         }
