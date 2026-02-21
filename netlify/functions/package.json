@@ -1,0 +1,11 @@
+{
+    "name": "netlify-functions",
+    "version": "1.0.0",
+    "type": "module",
+    "dependencies": {
+        "@google/generative-ai": "^0.24.1",
+        "docx": "^9.5.3",
+        "mammoth": "^1.11.0",
+        "pdf-parse": "^2.4.5"
+    }
+}
