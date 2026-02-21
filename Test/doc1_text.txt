@@ -1,0 +1,77 @@
+PATENT CLAIM CHART — NexaTherm Pro NXT-2000
+
+Patent: US11,234,567 B2  |  Accused Product: NexaTherm Pro NXT-2000  |  Date: 2026-02-21
+
+Case Reference: Lumenci-2026-001  |  Prepared by: Patent Analytics AI System
+
+
+
+ELEMENT QUALITY LEGEND: 
+
+  GREEN (1.a) = Strong evidence + strong reasoning  |  YELLOW (1.b) = Strong evidence, weak reasoning
+
+  ORANGE (1.c) = Weak evidence (marketing only)  |  RED (1.d) = No evidence  |  PURPLE (1.e) = Conflicting evidence
+
+Element
+
+Patent Claim Language
+
+Product Evidence
+
+AI Reasoning
+
+1.a
+
+A temperature measurement system comprising a digital sensor array configured to detect ambient temperature with accuracy of ±0.1°C or better.
+
+NexaTherm TechSpec v4.2 §3.1: "The NexaTherm Pro incorporates a 16-element MEMS thermopile array (Model NXT-T16) providing ambient temperature accuracy of ±0.05°C across -10°C to +50°C operating range."
+
+NexaTherm's 16-element MEMS thermopile array directly satisfies the "digital sensor array" limitation. The documented ±0.05°C accuracy exceeds the claimed ±0.1°C threshold. Literal infringement clearly established under plain-meaning construction.
+
+1.b
+
+A wireless communication module implementing IEEE 802.15.4 protocol for mesh network topology support with unicast and multicast addressing.
+
+API Reference v3.0 §7.3: "Radio: IEEE 802.15.4-2015 compliant 2.4GHz transceiver (EFR32MG21 SoC). Supports Thread mesh networking protocol. Maximum mesh depth: 16 nodes. Unicast and multicast addressing supported per RFC 4944."
+
+NexaTherm has wireless. This probably meets the claim element for wireless communication since the product connects wirelessly. The IEEE standard requirement may be satisfied.
+
+1.c
+
+A machine learning inference engine trained on historical occupancy data and user behavioural patterns to predict and pre-adjust temperature setpoints.
+
+NexaTherm.com marketing page: "Smart AI technology personalizes your comfort. The NexaTherm learns your schedule and adjusts automatically for the perfect temperature every time."
+
+NexaTherm's smart technology appears to use AI that learns patterns, which may satisfy the machine learning limitation of the claim. The product adjusts automatically suggesting some form of prediction.
+
+1.d
+
+A humidity sensor configured to measure relative humidity with accuracy of ±2% RH or better across a range of 10% to 90% relative humidity.
+
+[NO EVIDENCE MAPPED]
+
+No product documentation has been cited for this element. Evidence must be located and added.
+
+[NO REASONING — ELEMENT UNSUPPORTED]
+
+Cannot establish infringement without evidence. Requires technical documentation showing humidity sensor specifications.
+
+1.e
+
+An occupancy detection module comprising a passive infrared sensor with a detection range of at least 5 meters and a field of view of at least 90 degrees.
+
+[CONFLICTING SOURCES — REQUIRES RESOLUTION]
+
+Source A (TechSpec v4.2 §5.1): PIR range = 8 meters, 120° FOV
+Source B (Datasheet v2.0 §5.1): PIR range = 3 meters, 90° FOV
+
+It is unclear which specification applies to the accused product.
+
+Evidence conflict prevents definitive reasoning. If 8m range applies (Source A): literal infringement established — exceeds ≥5m threshold. If 3m range applies (Source B): infringement NOT established — does not meet threshold. Source must be resolved before this element can be mapped.
+
+
+
+[TEST NOTE] This document is DOC1_ClaimChart.docx. Upload this first in every Antigravity test scenario.
+
+[TEST NOTE] Element 1.a = STRONG (SC-1 baseline). Element 1.b = WEAK REASONING (SC-2 target). Element 1.c = WEAK EVIDENCE (SC-3/EC-3). Element 1.d = MISSING (SC-4). Element 1.e = CONFLICTING (SC-5/EC-1).
+
