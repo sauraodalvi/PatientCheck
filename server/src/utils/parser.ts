@@ -70,42 +70,59 @@ Rules:
 - If evidence shows CONFLICTING SOURCES, include both sources in the evidence field
 - Return ONLY the JSON array, starting with [ and ending with ]`;
 
-    try {
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const aiText = response.text().trim();
+    const maxRetries = 3;
+    let attempt = 0;
 
-        console.log("Gemini raw response (first 500):", aiText.substring(0, 500));
+    while (attempt < maxRetries) {
+        try {
+            const result = await model.generateContent(prompt);
+            const response = await result.response;
+            const aiText = response.text().trim();
 
-        // Try to extract JSON array using multiple strategies
-        // Strategy 1: Direct parse if it starts with [
-        if (aiText.startsWith('[')) {
-            try { return JSON.parse(aiText); } catch (_) { }
+            console.log("Gemini raw response (first 500):", aiText.substring(0, 500));
+
+            // Try to extract JSON array using multiple strategies
+            // Strategy 1: Direct parse if it starts with [
+            if (aiText.startsWith('[')) {
+                try { return JSON.parse(aiText); } catch (_) { }
+            }
+
+            // Strategy 2: Find JSON array in the response
+            const jsonMatch = aiText.match(/\[[\s\S]*?\]/s);
+            if (jsonMatch) {
+                try { return JSON.parse(jsonMatch[0]); } catch (_) { }
+            }
+
+            // Strategy 3: Strip markdown fences
+            const stripped = aiText.replace(/```json\n?|```\n?/g, '').trim();
+            if (stripped.startsWith('[')) {
+                try { return JSON.parse(stripped); } catch (_) { }
+            }
+
+            // Strategy 4: Find largest [...] block
+            const matches = [...aiText.matchAll(/\[[\s\S]*\]/g)];
+            if (matches.length > 0) {
+                const longest = matches.sort((a, b) => b[0].length - a[0].length)[0][0];
+                try { return JSON.parse(longest); } catch (_) { }
+            }
+
+            console.error("Could not parse Gemini response as JSON array. Response:", aiText.substring(0, 300));
+            throw new Error("Failed to parse JSON array from AI response");
+        } catch (error: any) {
+            attempt++;
+            const is503 = error.message?.includes('503') || error.status === 503;
+            const is429 = error.message?.includes('429') || error.status === 429;
+
+            if ((is503 || is429) && attempt < maxRetries) {
+                const delay = attempt * 3000;
+                console.warn(`Parse Gemini API ${is429 ? 'Rate Limit (429)' : 'High Demand (503)'} on attempt ${attempt}. Retrying in ${delay / 1000}s...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+
+            console.error("Gemini API Error in parseDocument:", error);
+            return [];
         }
-
-        // Strategy 2: Find JSON array in the response
-        const jsonMatch = aiText.match(/\[[\s\S]*?\]/s);
-        if (jsonMatch) {
-            try { return JSON.parse(jsonMatch[0]); } catch (_) { }
-        }
-
-        // Strategy 3: Strip markdown fences
-        const stripped = aiText.replace(/```json\n?|```\n?/g, '').trim();
-        if (stripped.startsWith('[')) {
-            try { return JSON.parse(stripped); } catch (_) { }
-        }
-
-        // Strategy 4: Find largest [...] block
-        const matches = [...aiText.matchAll(/\[[\s\S]*\]/g)];
-        if (matches.length > 0) {
-            const longest = matches.sort((a, b) => b[0].length - a[0].length)[0][0];
-            try { return JSON.parse(longest); } catch (_) { }
-        }
-
-        console.error("Could not parse Gemini response as JSON array. Response:", aiText.substring(0, 300));
-        return [];
-    } catch (error) {
-        console.error("Gemini API Error:", error);
-        return [];
     }
+    return [];
 }

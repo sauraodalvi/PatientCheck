@@ -20,6 +20,7 @@ export interface ChatMessage {
         newEvidence: string;
     };
     status?: 'pending' | 'accepted' | 'rejected';
+    feedback?: 'good' | 'bad';
 }
 
 export interface ClaimElement {
@@ -31,15 +32,24 @@ export interface ClaimElement {
     flags: string[];
     versions: ElementVersion[];
     chatHistory: ChatMessage[];
+    audit?: {
+        ldsScore: number;
+        verdict: 'PASS' | 'WARNING' | 'CRITICAL';
+        auditNotes: string;
+        hedgingDetected: boolean;
+        missingCitations: boolean;
+        lastAuditedReasoning?: string;
+    };
 }
 
 interface ClaimTableProps {
     elements: ClaimElement[];
     onSelectElement: (element: ClaimElement) => void;
+    onAddElement: () => void;
     selectedId: string | null;
 }
 
-const ClaimTable: React.FC<ClaimTableProps> = ({ elements, onSelectElement, selectedId }) => {
+const ClaimTable: React.FC<ClaimTableProps> = ({ elements, onSelectElement, onAddElement, selectedId }) => {
     return (
         <div className="w-full border-t border-l border-[#e1e1e0] bg-white text-sm">
             {/* Header */}
@@ -112,7 +122,10 @@ const ClaimTable: React.FC<ClaimTableProps> = ({ elements, onSelectElement, sele
             })}
 
             {/* Add Row placeholder */}
-            <div className="p-2 border-b border-[#e1e1e0] text-[#d1d0cc] hover:text-[#7a776e] cursor-pointer hover:bg-[#f7f7f5] text-xs">
+            <div
+                onClick={onAddElement}
+                className="p-2 border-b border-[#e1e1e0] text-[#d1d0cc] hover:text-[#7a776e] cursor-pointer hover:bg-[#f7f7f5] text-xs"
+            >
                 + New Element
             </div>
         </div>

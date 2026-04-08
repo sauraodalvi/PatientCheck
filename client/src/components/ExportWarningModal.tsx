@@ -33,7 +33,7 @@ const ExportWarningModal: React.FC<ExportWarningModalProps> = ({ elements, onExp
 
     return (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full border border-[#e1e1e0]">
+            <div className="bg-white rounded-xl max-w-lg w-full border border-[#e1e1e0]">
                 {/* Header */}
                 <div className="flex items-center justify-between p-5 border-b border-[#e1e1e0]">
                     <div className="flex items-center gap-3">

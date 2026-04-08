@@ -2,11 +2,14 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     Layout, FileText, Upload, MessageSquare, Download, ChevronLeft,
     ChevronRight, X, Loader2, AlertTriangle, Plus, Trash2, BookOpen,
-    RotateCcw, Check, Ban, Send, History, RefreshCw
+    RotateCcw, Check, Ban, Send, History, RefreshCw, BarChart3, ShieldCheck, Play, Info
 } from 'lucide-react';
 import ClaimTable, { ClaimElement, ChatMessage, ElementVersion } from './components/ClaimTable';
 import DiffView from './components/DiffView';
 import ExportWarningModal, { getIssues } from './components/ExportWarningModal';
+import QualityScorecard from './components/QualityScorecard';
+import AddReferenceModal from './components/AddReferenceModal';
+import DemoSelectorModal, { DemoPath } from './components/DemoSelectorModal';
 import api from './api';
 import Joyride, { Step } from 'react-joyride';
 
@@ -46,15 +49,30 @@ const ChatBubble: React.FC<{
     msg: ChatMessage;
     onAccept?: () => void;
     onReject?: () => void;
-}> = ({ msg, onAccept, onReject }) => {
+    onFeedback?: (type: 'good' | 'bad') => void;
+}> = ({ msg, onAccept, onReject, onFeedback }) => {
     const isUser = msg.role === 'user';
     return (
         <div className={`flex flex-col gap-2 ${isUser ? 'items-end' : 'items-start'}`}>
-            <div className={`max-w-[90%] px-3 py-2 rounded-xl text-xs leading-relaxed whitespace-pre-wrap
+            <div className={`group relative max-w-[90%] px-3 py-2 rounded-xl text-xs leading-relaxed whitespace-pre-wrap
                 ${isUser
                     ? 'bg-[#37352f] text-white rounded-br-sm'
                     : 'bg-[#f2f1ee] text-[#37352f] rounded-bl-sm border border-[#e1e1e0]'}`}>
                 {msg.content}
+
+                {/* Micro-feedback UI */}
+                {!isUser && onFeedback && !msg.proposedChange && (
+                    <div className="absolute -right-12 top-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => onFeedback('good')}
+                            className={`p-1 rounded hover:bg-green-50 text-[#7a776e] hover:text-green-600 ${msg.feedback === 'good' ? 'text-green-600 bg-green-50' : ''}`}>
+                            <Check size={10} />
+                        </button>
+                        <button onClick={() => onFeedback('bad')}
+                            className={`p-1 rounded hover:bg-red-50 text-[#7a776e] hover:text-red-600 ${msg.feedback === 'bad' ? 'text-red-600 bg-red-50' : ''}`}>
+                            <X size={10} />
+                        </button>
+                    </div>
+                )}
             </div>
 
             {/* Diff view for proposed changes */}
@@ -123,6 +141,7 @@ const App: React.FC = () => {
     const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
     const [isUploading, setIsUploading] = useState(false);
     const [isUploadingCtx, setIsUploadingCtx] = useState(false);
+    const [isDemoLoading, setIsDemoLoading] = useState(false);
     const [isRefining, setIsRefining] = useState(false);
     const [isExporting, setIsExporting] = useState(false);
     const [chatInput, setChatInput] = useState('');
@@ -132,7 +151,17 @@ const App: React.FC = () => {
         localStorage.getItem('lumenci_banner_v2') === 'true'
     );
     const [apiKey, setApiKey] = useState(localStorage.getItem('lumenci_gemini_key') || '');
+    const [systemPrompt, setSystemPrompt] = useState(localStorage.getItem('lumenci_system_prompt') || '');
+    const [urlInput, setUrlInput] = useState('');
+    const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+    const [isQualityViewOpen, setIsQualityViewOpen] = useState(false);
+    const [isAddRefModalOpen, setIsAddRefModalOpen] = useState(false);
+    const [auditingId, setAuditingId] = useState<string | null>(null);
     const [runTour, setRunTour] = useState(false);
+    const [demoPath, setDemoPath] = useState<DemoPath | null>(null);
+    const [showDemoSelector, setShowDemoSelector] = useState(false);
+    const [isValidatingKey, setIsValidatingKey] = useState(false);
+    const [keyValidationStatus, setKeyValidationStatus] = useState<'idle' | 'success' | 'error'>('idle');
 
     const chartFileRef = useRef<HTMLInputElement>(null);
     const ctxFileRef = useRef<HTMLInputElement>(null);
@@ -144,100 +173,235 @@ const App: React.FC = () => {
     const contextDocs = activeChart?.contextDocs ?? [];
     const selectedElement = elements.find(e => e.id === selectedElementId) ?? null;
 
+    useEffect(() => {
+        localStorage.setItem('lumenci_gemini_key', apiKey);
+        if (keyValidationStatus !== 'idle') setKeyValidationStatus('idle');
+    }, [apiKey]);
+
+    const handleValidateKey = async () => {
+        if (!apiKey.trim()) return;
+        setIsValidatingKey(true);
+        setKeyValidationStatus('idle');
+        try {
+            // We'll use a lightweight call to check validity
+            await api.get('/api/health', { headers: { 'x-gemini-api-key': apiKey } });
+            setKeyValidationStatus('success');
+        } catch (err) {
+            setKeyValidationStatus('error');
+        } finally {
+            setIsValidatingKey(false);
+        }
+    };
+
     const isDemoChart = activeChart?.title === 'Demo Claim Chart';
-    const tourSteps: Step[] = !isDemoChart ? [
-        {
-            target: 'body',
-            content: (
-                <div className="text-left">
-                    <p className="font-bold mb-1">Welcome! 👋</p>
-                    <p>Let's show you how to use this app in 1 minute.</p>
-                </div>
-            ),
-            placement: 'center',
-        },
-        {
-            target: '#api-key-container',
-            content: 'Step 1: Put your AI key here so the brain works.',
-            placement: 'right',
-        },
-        {
-            target: '#new-chart-btn',
-            content: 'Step 2: Upload your first document here.',
-            placement: 'right',
-        },
-        {
-            target: '#reference-docs-section',
-            content: 'Step 3: Add extra documents here to help the AI find better proof.',
-            placement: 'right',
-        },
-        {
-            target: '#main-content',
-            content: 'Step 4: Your results show up here. Click a row to talk about it.',
-            placement: 'bottom',
-        },
-        {
-            target: '#chat-pane',
-            content: 'Step 5: Use this chat to fix errors or find better evidence.',
-            placement: 'left',
-        },
-        {
-            target: '#export-options',
-            content: 'Step 6: When done, save your work as a file here.',
-            placement: 'top',
-        },
-    ] : [
-        {
-            target: 'body',
-            content: (
-                <div className="text-left">
-                    <p className="font-bold mb-1">Demo: NexaTherm Thermostat</p>
-                    <p>We loaded a sample for you. Let's see how the AI grades the evidence.</p>
-                </div>
-            ),
-            placement: 'center',
-        },
-        {
-            target: '#claim-row-1-a',
-            content: (
-                <div className="text-left text-xs">
-                    <p className="font-bold text-green-600 mb-1">Case 1: The GOOD</p>
-                    <p>Row 1.a is green because we found the proof. It matches the claim perfectly!</p>
-                </div>
-            ),
-            placement: 'bottom',
-        },
-        {
-            target: '#claim-row-1-b',
-            content: (
-                <div className="text-left text-xs">
-                    <p className="font-bold text-yellow-600 mb-1">Case 2: The OKAY</p>
-                    <p>Row 1.b is yellow. The AI found something similar but isn't 100% sure yet. We need to check it.</p>
-                </div>
-            ),
-            placement: 'bottom',
-        },
-        {
-            target: '#claim-row-1-e',
-            content: (
-                <div className="text-left text-xs">
-                    <p className="font-bold text-red-600 mb-1">Case 3: The WEIRD</p>
-                    <p>Row 1.e is orange. Two documents say different things! The AI is warning you about a conflict.</p>
-                </div>
-            ),
-            placement: 'bottom',
-        },
-        {
-            target: '#chat-pane',
-            content: 'Click row 1.b and type "Double check the wireless protocol" to see the AI fix it!',
-            placement: 'left',
-        },
-    ];
+
+    const getTourSteps = (): Step[] => {
+        if (!isDemoChart) {
+            return [
+                {
+                    target: 'body',
+                    content: (
+                        <div className="text-left py-1">
+                            <p className="font-bold mb-1">Standard Workflow 🛠️</p>
+                            <p className="text-xs">Learn how to refine any claim chart from scratch.</p>
+                        </div>
+                    ),
+                    placement: 'center',
+                },
+                { target: '#api-key-container', content: '1. Secure AI access.', placement: 'right' },
+                { target: '#new-chart-btn', content: '2. Upload your draft.', placement: 'right' },
+                { target: '#reference-docs-section', content: '3. Add technical proof docs.', placement: 'right' },
+                { target: '#main-content', content: '4. View structured element grid.', placement: 'bottom' },
+                { target: '#chat-pane', content: '5. Refine specific cells via AI chat.', placement: 'left' },
+                { target: '#export-options', content: '6. Export to PDF/Word.', placement: 'top' },
+            ];
+        }
+
+        switch (demoPath) {
+            case 'case-a':
+                return [
+                    {
+                        target: 'body',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold text-green-600 mb-1">Scenario A: The Literal Match</p>
+                                <p>Analysts often miss exact phrasing in 500-page manuals. Lumenci finds them in milliseconds.</p>
+                            </div>
+                        ),
+                        placement: 'center',
+                    },
+                    {
+                        target: '#claim-row-1-a',
+                        content: 'This element requires WiFi capability. AI scanned the "Acme Product Page" and found the exact matching spec.',
+                        placement: 'bottom'
+                    },
+                    {
+                        target: '#reference-docs-section',
+                        content: 'Check the Reference Docs sidebar to see the source URL the AI used.',
+                        placement: 'right'
+                    }
+                ];
+            case 'case-b':
+                return [
+                    {
+                        target: 'body',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold text-yellow-600 mb-1">Scenario B: Strengthening Weak Reasoning</p>
+                                <p>Sometimes "AI Logic" is too vague for a courtroom. Here is how we fix it.</p>
+                            </div>
+                        ),
+                        placement: 'center',
+                    },
+                    {
+                        target: '#claim-row-1-b',
+                        content: 'The evidence for "Motion Sensing" is here, but the reasoning is light. Click this row.',
+                        placement: 'bottom'
+                    },
+                    {
+                        target: '#chat-pane',
+                        content: 'Action: Type "Expand reasoning using technical details" in the chat to see a high-precision rewrite.',
+                        placement: 'left'
+                    }
+                ];
+            case 'case-c':
+                return [
+                    {
+                        target: 'body',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold text-orange-600 mb-1">Scenario C: Resolving Conflicts</p>
+                                <p>When two documents disagree, the human analyst must make the final call.</p>
+                            </div>
+                        ),
+                        placement: 'center',
+                    },
+                    {
+                        target: '#claim-row-1-e',
+                        content: 'Hardware specs say "ML enabled", but Marketing says "No AI". We flag this as a conflict.',
+                        placement: 'bottom'
+                    },
+                    {
+                        target: '#quality-dashboard-btn',
+                        content: 'The Quality Audit will flag this row as "High Risk" due to contradictory citations.',
+                        placement: 'bottom'
+                    }
+                ];
+            default:
+                return [
+                    {
+                        target: 'body',
+                        content: (
+                            <div className="text-left">
+                                <p className="font-bold mb-1 italic">Welcome to the Lumenci AI Experience! 🚀</p>
+                                <p className="text-xs leading-relaxed">This overview will walk you through the mission control center for your patent claim analysis. See how we turn complex technical docs into courtroom-ready charts.</p>
+                            </div>
+                        ),
+                        placement: 'center',
+                    },
+                    {
+                        target: '#new-chart-btn',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">1. Start Fresh</p>
+                                <p>Begin a new analysis by clicking "Analyze New Claim" to upload your claim draft. AI will automatically extract and structure each element.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: 'nav.overflow-y-auto.max-h-40', // Charts history
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">2. Project History</p>
+                                <p>Seamlessly switch between multiple claim charts. All your work is saved locally in your browser for instant retrieval.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: '#reference-docs-section',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">3. The Knowledge Base</p>
+                                <p>Upload technical manuals, datasheets, or source URLs here. This becomes the "source of truth" the AI uses to find evidence.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: '#system-prompt-container',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">4. Custom AI Guidance</p>
+                                <p>Fine-tune how the AI thinks. Provide specific legal instructions or domain expertise to sharpen the analysis.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: '#api-key-container',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">5. Secure AI Integration</p>
+                                <p>Your data stays secure with direct Gemini API integration. Just drop your key here to activate the engine.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: '#export-options',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">6. One-Click Deliverables</p>
+                                <p>Export your refined charts directly to professional DOCX format, or save the full state to share with teammates.</p>
+                            </div>
+                        ),
+                        placement: 'right'
+                    },
+                    {
+                        target: '#main-content',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">7. Structured Evidence Grid</p>
+                                <p>This is where the magic happens. A bird's-eye view of every claim element, matched evidence, and logical reasoning.</p>
+                            </div>
+                        ),
+                        placement: 'bottom'
+                    },
+                    {
+                        target: '#chat-pane',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">8. Interactive AI Refinement</p>
+                                <p>Not happy with a logic step? Chat directly with the AI to find better proof or strengthen the language in real-time.</p>
+                            </div>
+                        ),
+                        placement: 'left'
+                    },
+                    {
+                        target: '#quality-dashboard-btn',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold mb-1">Ready for the Deep Dive?</p>
+                                <p>Audit the entire chart at once to spot technical conflicts or weak points before they become liabilities.</p>
+                            </div>
+                        ),
+                        placement: 'bottom'
+                    }
+                ];
+        }
+    };
 
     useEffect(() => { saveCharts(charts); }, [charts]);
     useEffect(() => {
         if (activeChartId) localStorage.setItem('lumenci_active_chart_v2', activeChartId);
     }, [activeChartId]);
+
+    useEffect(() => {
+        localStorage.setItem('lumenci_system_prompt', systemPrompt);
+    }, [systemPrompt]);
+
     useEffect(() => {
         chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [selectedElement?.chatHistory?.length]);
@@ -356,6 +520,108 @@ const App: React.FC = () => {
         }
     };
 
+    // ── Fetch content from URL ──
+    const handleUrlSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!activeChartId || !urlInput.trim() || isFetchingUrl) return;
+
+        setIsFetchingUrl(true);
+        try {
+            const res = await api.post('/api/fetch-url', { url: urlInput });
+            updateChart(activeChartId, c => ({
+                ...c,
+                contextDocs: [...c.contextDocs.filter(d => d.name !== res.data.doc.name), res.data.doc]
+            }));
+            setUrlInput('');
+        } catch (err: any) {
+            alert(`Failed to fetch URL: ${err.response?.data?.message || err.message}`);
+        } finally {
+            setIsFetchingUrl(false);
+        }
+    };
+
+    // ── Deep AI Audit (LLM-as-a-Judge) ──
+    const handleRunAudit = async (elementId: string) => {
+        if (!activeChartId || auditingId) return;
+        const el = activeChart?.elements.find(e => e.id === elementId);
+        if (!el) return;
+
+        setAuditingId(elementId);
+        try {
+            const res = await api.post('/api/audit', {
+                element: el.element,
+                evidence: el.evidence,
+                reasoning: el.reasoning,
+                contextDocs: activeChart?.contextDocs,
+                apiKey
+            }, {
+                headers: { 'X-Gemini-API-Key': apiKey || '' }
+            });
+
+            updateElement(activeChartId, elementId, el => ({
+                ...el,
+                audit: { ...res.data.audit, lastAuditedReasoning: el.reasoning }
+            }));
+        } catch (err: any) {
+            alert(`Audit failed: ${err.message}`);
+        } finally {
+            setAuditingId(null);
+        }
+    };
+
+    const handleAuditStale = async () => {
+        if (!elements || auditingId) return;
+        const staleElements = elements.filter(el =>
+            el.audit && el.reasoning !== el.audit.lastAuditedReasoning
+        );
+        for (const el of staleElements) {
+            await handleRunAudit(el.id);
+        }
+    };
+
+    const handleAuditAll = async () => {
+        if (!activeChartId || elements.length === 0 || auditingId) return;
+
+        setAuditingId('ALL'); // SPECIAL ID for all
+        try {
+            const res = await api.post('/api/audit-batch', {
+                elements: elements.map(el => ({
+                    id: el.id,
+                    element: el.element,
+                    evidence: el.evidence,
+                    reasoning: el.reasoning
+                })),
+                contextDocs: activeChart?.contextDocs,
+                apiKey
+            }, {
+                headers: { 'X-Gemini-API-Key': apiKey || '' }
+            });
+
+            if (res.data.results && Array.isArray(res.data.results)) {
+                // Update elements in batch
+                setCharts(prev => prev.map(c => {
+                    if (c.id !== activeChartId) return c;
+                    return {
+                        ...c,
+                        elements: c.elements.map(el => {
+                            const auditResult = res.data.results.find((r: any) => r.elementId === el.id);
+                            if (!auditResult) return el;
+                            return {
+                                ...el,
+                                audit: { ...auditResult, lastAuditedReasoning: el.reasoning }
+                            };
+                        })
+                    };
+                }));
+            }
+        } catch (err: any) {
+            console.error('Batch audit failed:', err);
+            alert(`Batch audit failed: ${err.response?.data?.message || err.message}`);
+        } finally {
+            setAuditingId(null);
+        }
+    };
+
     // ── AI Refine ──
     const handleRefine = async (overrideInput?: string) => {
         const trimmed = (overrideInput || chatInput).trim();
@@ -402,7 +668,8 @@ const App: React.FC = () => {
                 query: trimmed,
                 contextDocs: contextDocs,
                 chatHistory: priorHistory.slice(0, -1), // exclude the one we just pushed
-                apiKey: apiKey
+                apiKey: apiKey,
+                systemPrompt: systemPrompt
             }, {
                 headers: { 'X-Gemini-API-Key': apiKey || '' }
             });
@@ -514,6 +781,11 @@ const App: React.FC = () => {
         setUndoPending(null);
     };
 
+    // ── Handle AI response feedback ──
+    const handleFeedback = (elementId: string, msgIndex: number, type: 'good' | 'bad') => {
+        updateChatMessage(activeChartId!, elementId, msgIndex, { feedback: type });
+    };
+
     // ── Export ──
     const handleExportClick = () => {
         if (!activeChart) return;
@@ -569,66 +841,82 @@ const App: React.FC = () => {
         }
     };
 
-    const handleDemoLoad = async () => {
-        setIsUploading(true);
+    const handleDemoLoad = async (selectedPath: DemoPath = 'overview', shouldRunTour = true) => {
+        setIsDemoLoading(true);
         try {
-            // Demo data is fully client-side — no backend needed
-            const demoElements = [
+            // Realistic demo data based on User Request
+            const demoElements: ClaimElement[] = [
                 {
                     id: '1.a',
-                    element: 'A temperature measurement system comprising a digital sensor array configured to detect ambient temperature with accuracy of ±0.1°C or better.',
-                    evidence: 'NexaTherm TechSpec v4.2 §3.1: "The NexaTherm Pro incorporates a 16-element MEMS thermopile array (Model NXT-T16) providing ambient temperature accuracy of ±0.05°C across -10°C to +50°C operating range."',
-                    reasoning: "NexaTherm's 16-element MEMS thermopile array directly satisfies the \"digital sensor array\" limitation. The documented ±0.05°C accuracy exceeds the claimed ±0.1°C threshold. Literal infringement clearly established under plain-meaning construction.",
-                    confidence: 95, flags: [], versions: [], chatHistory: []
+                    element: 'A temperature control device with a wireless communication module.',
+                    evidence: 'Acme Thermostat product page states: "WiFi-enabled smart thermostat connects to your home network"',
+                    reasoning: "The Acme device has WiFi capability which satisfies the wireless communication module requirement.",
+                    confidence: 98, flags: [], versions: [], chatHistory: []
                 },
                 {
                     id: '1.b',
-                    element: 'A wireless communication module implementing IEEE 802.15.4 protocol for mesh network topology support with unicast and multicast addressing.',
-                    evidence: 'API Reference v3.0 §7.3: "Radio: IEEE 802.15.4-2015 compliant 2.4GHz transceiver (EFR32MG21 SoC). Supports Thread mesh networking protocol. Maximum mesh depth: 16 nodes. Unicast and multicast addressing supported per RFC 4944."',
-                    reasoning: 'NexaTherm has wireless. This probably meets the claim element for wireless communication since the product connects wirelessly. The IEEE standard requirement may be satisfied.',
-                    confidence: 55, flags: ['Reasoning uses hedging language ("probably meets", "may be satisfied") — needs technical rewrite'], versions: [], chatHistory: []
-                },
-                {
-                    id: '1.c',
-                    element: 'A machine learning inference engine trained on historical occupancy data and user behavioural patterns to predict and pre-adjust temperature setpoints.',
-                    evidence: 'NexaTherm.com marketing page: "Smart AI technology personalizes your comfort. The NexaTherm learns your schedule and adjusts automatically for the perfect temperature every time."',
-                    reasoning: "NexaTherm's smart technology appears to use AI that learns patterns, which may satisfy the machine learning limitation of the claim. The product adjusts automatically suggesting some form of prediction.",
-                    confidence: 25, flags: ['Evidence is marketing copy only — no technical specification', 'Reasoning uses hedging language — needs technical evidence'], versions: [], chatHistory: []
-                },
-                {
-                    id: '1.d',
-                    element: 'A humidity sensor configured to measure relative humidity with accuracy of ±2% RH or better across a range of 10% to 90% relative humidity.',
-                    evidence: '',
-                    reasoning: '',
-                    confidence: 0, flags: ['No evidence mapped — element is unsupported'], versions: [], chatHistory: []
+                    element: 'A motion sensor for detecting occupancy.',
+                    evidence: 'Acme technical specifications document shows: "Built-in motion sensor detects when people are home"',
+                    reasoning: "Motion sensor explicitly mentioned in specs directly maps to the claim element for occupancy detection.",
+                    confidence: 95, flags: [], versions: [], chatHistory: []
                 },
                 {
                     id: '1.e',
-                    element: 'An occupancy detection module comprising a passive infrared sensor with a detection range of at least 5 meters and a field of view of at least 90 degrees.',
-                    evidence: '[CONFLICTING SOURCES] Source A (TechSpec v4.2 §5.1): PIR range = 8 meters, 120° FOV | Source B (Datasheet v2.0 §5.1): PIR range = 3 meters, 90° FOV',
-                    reasoning: 'Evidence conflict prevents definitive reasoning. If 8m range applies (Source A): literal infringement established — exceeds ≥5m threshold. If 3m range applies (Source B): infringement NOT established.',
-                    confidence: 40, flags: ['Conflicting evidence — two sources give different PIR range values. Must resolve before mapping.'], versions: [], chatHistory: []
+                    element: 'Conflict Management logic for multi-state inputs.',
+                    evidence: 'Acme technical docs say "Conflict Resolution V1.2", but marketing says "Automatic Sync".',
+                    reasoning: "The technical documentation and marketing materials use different terminology which suggests potential conflict in logic implementation.",
+                    confidence: 45, flags: ['Potential documentation conflict detected'], versions: [], chatHistory: []
                 }
             ];
 
-            const newChart: Chart = {
-                id: `demo_${Date.now()}`,
+            const demoChart: Chart = {
+                id: 'demo-chart',
                 title: 'Demo Claim Chart',
                 elements: demoElements,
-                contextDocs: [],
+                contextDocs: [
+                    { name: 'Acme_Thermostat_Specs.pdf', text: 'Acme Thermostat supports 2.4GHz WiFi and has a PIR sensor for motion detection.' }
+                ],
                 createdAt: new Date().toISOString()
             };
 
-            setCharts(prev => [newChart, ...prev]);
-            setActiveChartId(newChart.id);
+            setCharts(prev => {
+                const filtered = prev.filter(c => c.id !== 'demo-chart');
+                return [demoChart, ...filtered];
+            });
+            setActiveChartId('demo-chart');
             setSelectedElementId(null);
-            setRunTour(true);
+            setDemoPath(selectedPath);
+            setShowDemoSelector(false);
+            if (shouldRunTour) {
+                setTimeout(() => setRunTour(true), 500);
+            }
         } catch (err) {
             console.error('Demo load failed:', err);
             alert('Failed to load demo.');
         } finally {
-            setIsUploading(false);
+            setIsDemoLoading(false);
         }
+    };
+
+    const handleAddNewElement = () => {
+        if (!activeChartId) return;
+        const newIdNum = elements.length + 1;
+        const newElement: ClaimElement = {
+            id: `${newIdNum}`,
+            element: 'Double click to edit claim element...',
+            evidence: '',
+            reasoning: '',
+            confidence: 100,
+            flags: [],
+            versions: [],
+            chatHistory: []
+        };
+
+        updateChart(activeChartId, c => ({
+            ...c,
+            elements: [...c.elements, newElement]
+        }));
+        setSelectedElementId(newElement.id);
     };
 
     const handleDeleteChart = (id: string, e: React.MouseEvent) => {
@@ -651,41 +939,6 @@ const App: React.FC = () => {
     // ─────────────────────────────────────────────
     return (
         <div className="flex h-screen w-full bg-white overflow-hidden text-[#37352f] flex-col">
-            <Joyride
-                steps={tourSteps}
-                run={runTour}
-                continuous
-                showProgress
-                showSkipButton
-                callback={(data) => {
-                    const { status } = data;
-                    if (status === 'finished' || status === 'skipped') {
-                        setRunTour(false);
-                    }
-                }}
-                styles={{
-                    options: {
-                        primaryColor: '#37352f',
-                        zIndex: 1000,
-                    },
-                    tooltipContainer: {
-                        textAlign: 'left',
-                    },
-                    buttonBack: {
-                        marginRight: 10,
-                        fontSize: '12px',
-                        color: '#7a776e',
-                    },
-                    buttonNext: {
-                        fontSize: '12px',
-                        borderRadius: '4px',
-                    },
-                    buttonSkip: {
-                        fontSize: '12px',
-                        color: '#7a776e',
-                    },
-                }}
-            />
 
             {/* Storage banner */}
             {!bannerDismissed && (
@@ -709,118 +962,233 @@ const App: React.FC = () => {
                     </button>
 
                     {sidebarOpen && (
-                        <div className="p-4 flex flex-col h-full overflow-hidden gap-3">
-                            {/* Logo */}
-                            <div className="flex items-center gap-2 px-2">
-                                <div className="bg-[#37352f] text-white p-1.5 rounded"><Layout size={16} /></div>
-                                <span className="font-semibold text-sm">Lumenci AI</span>
-                            </div>
-
-                            {/* New Chart */}
-                            <button id="new-chart-btn" onClick={() => { setActiveChartId(null); setSelectedElementId(null); chartFileRef.current?.click(); }}
-                                className="flex items-center gap-2 p-2 bg-[#37352f] text-white rounded text-xs font-medium hover:opacity-90">
-                                <Plus size={13} /> New Chart
-                            </button>
-
-                            {/* Chart History */}
-                            <div>
-                                <div className="flex items-center gap-1 px-1 mb-1">
-                                    <History size={11} className="text-[#7a776e]" />
-                                    <span className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider">Charts</span>
-                                </div>
-                                <nav className="overflow-y-auto max-h-40 space-y-0.5">
-                                    {charts.length === 0
-                                        ? <p className="px-2 py-2 text-[11px] text-[#b0ada7]">No charts yet.</p>
-                                        : charts.map(chart => (
-                                            <div key={chart.id} onClick={() => { setActiveChartId(chart.id); setSelectedElementId(null); }}
-                                                className={`flex items-center gap-1.5 p-2 rounded cursor-pointer text-xs group
-                                                    ${activeChartId === chart.id ? 'bg-[#e8e8e5] font-medium' : 'hover:bg-[#efefed]'}`}>
-                                                <FileText size={12} className="shrink-0 text-[#7a776e]" />
-                                                <span className="truncate flex-1">{chart.title}</span>
-                                                <button onClick={(e) => handleDeleteChart(chart.id, e)}
-                                                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500">
-                                                    <Trash2 size={11} />
-                                                </button>
-                                            </div>
-                                        ))}
-                                </nav>
-                            </div>
-
-                            {/* Context Docs (only when a chart is active) */}
-                            <div id="reference-docs-section" className="flex-1 min-h-0 flex flex-col">
-                                <div className="flex items-center justify-between px-1 mb-1">
-                                    <div className="flex items-center gap-1">
-                                        <BookOpen size={11} className="text-[#7a776e]" />
-                                        <span className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider">Reference Docs</span>
+                        <div className="flex-1 flex flex-col min-h-0">
+                            {/* Header: Logo & New Chart */}
+                            <div className="p-4 border-b border-[#e1e1e0] bg-white space-y-3 shrink-0">
+                                <div className="flex items-center gap-2 px-1">
+                                    <div className="w-6 h-6 bg-[#37352f] rounded flex items-center justify-center">
+                                        <Layout size={14} className="text-white" />
                                     </div>
-                                    <button onClick={() => ctxFileRef.current?.click()}
-                                        className="text-[10px] text-[#7a776e] hover:text-[#37352f] flex items-center gap-0.5">
-                                        {isUploadingCtx ? <Loader2 size={10} className="animate-spin" /> : <Plus size={10} />}
-                                        Add
-                                    </button>
+                                    <span className="font-bold text-sm tracking-tight text-[#37352f]">Lumenci AI</span>
                                 </div>
-                                <nav className="overflow-y-auto space-y-0.5">
-                                    {contextDocs.length === 0
-                                        ? <p className="px-2 py-1 text-[11px] text-[#b0ada7]">No docs added. AI has no context.</p>
-                                        : contextDocs.map(doc => (
-                                            <div key={doc.name}
-                                                className="flex items-center gap-1.5 p-1.5 rounded text-[11px] group hover:bg-[#efefed]">
-                                                <FileText size={11} className="shrink-0 text-blue-500" />
-                                                <span className="truncate flex-1 text-[#37352f]">{doc.name}</span>
-                                                <button onClick={() => handleRemoveContextDoc(doc.name)}
-                                                    className="opacity-0 group-hover:opacity-100 p-0.5 hover:text-red-500">
-                                                    <X size={10} />
-                                                </button>
-                                            </div>
-                                        ))}
-                                </nav>
+                                <button
+                                    id="new-chart-btn"
+                                    onClick={() => { setActiveChartId(null); setSelectedElementId(null); }}
+                                    className="w-full flex items-center gap-2 px-3 py-2 bg-white border border-[#e1e1e0] text-[#37352f] rounded-lg hover:bg-[#efefed] transition-all text-xs font-semibold shadow-sm group"
+                                >
+                                    <Plus size={14} className="group-hover:rotate-90 transition-transform duration-300" />
+                                    New Chart
+                                </button>
                             </div>
 
-                            {/* Bottom actions */}
-                            <div className="mt-auto pt-4 border-t border-[#e1e1e0] space-y-3">
-                                <div id="api-key-container" className="space-y-1">
-                                    <label className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider px-1">Gemini API Key</label>
-                                    <input
-                                        id="api-key-input"
-                                        type="password"
-                                        placeholder="AIzaSy..."
-                                        value={apiKey}
-                                        onChange={(e) => setApiKey(e.target.value)}
-                                        className="w-full px-2 py-1.5 border border-[#e1e1e0] rounded text-xs focus:ring-1 focus:ring-[#37352f] outline-none"
+                            <div className="flex-1 overflow-y-auto p-3 space-y-6 custom-scrollbar">
+                                {/* Section: Charts */}
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between px-2">
+                                        <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Project Charts</label>
+                                        <span className="text-[9px] text-[#b0ada7] font-medium bg-[#efefed] px-1.5 rounded-full">{charts.length}</span>
+                                    </div>
+                                    <nav className="space-y-1 max-h-[160px] overflow-y-auto pr-1 custom-scrollbar">
+                                        {charts.length === 0 ? (
+                                            <div className="px-3 py-4 text-[11px] text-[#b0ada7] border border-dashed border-[#e1e1e0] rounded-xl text-center bg-white/50">
+                                                No charts started.
+                                            </div>
+                                        ) : (
+                                            charts.map(chart => (
+                                                <div
+                                                    key={chart.id}
+                                                    onClick={() => {
+                                                        setActiveChartId(chart.id);
+                                                        setSelectedElementId(null);
+                                                    }}
+                                                    className={`flex items-center gap-2.5 p-2.5 rounded-xl text-[11px] cursor-pointer group transition-all duration-200 border
+                                                        ${activeChartId === chart.id
+                                                            ? 'bg-white text-[#37352f] font-semibold shadow-sm border-[#e1e1e0]'
+                                                            : 'text-[#7a776e] hover:bg-[#efefed]/80 hover:text-[#37352f] border-transparent'}`}
+                                                >
+                                                    <div className={`p-1 rounded-md ${activeChartId === chart.id ? 'bg-[#37352f]/5 text-[#37352f]' : 'bg-transparent text-[#b0ada7]'}`}>
+                                                        <FileText size={13} />
+                                                    </div>
+                                                    <span className="truncate flex-1">{chart.title}</span>
+                                                    {activeChartId === chart.id && (
+                                                        <div className="w-1.5 h-1.5 bg-blue-500 rounded-full" />
+                                                    )}
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); setCharts(prev => prev.filter(c => c.id !== chart.id)); if (activeChartId === chart.id) setActiveChartId(null); }}
+                                                        className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-red-50 hover:text-red-500 rounded-md transition-all"
+                                                        title="Delete chart"
+                                                    >
+                                                        <Trash2 size={12} />
+                                                    </button>
+                                                </div>
+                                            ))
+                                        )}
+                                    </nav>
+                                </div>
+
+                                {/* Section: Reference Docs */}
+                                <div id="reference-docs-section" className="space-y-3 pt-4 border-t border-[#e1e1e0]/60">
+                                    <div className="flex items-center justify-between px-2">
+                                        <div className="flex items-center gap-2">
+                                            <div className="p-1 bg-blue-50 text-blue-600 rounded-md">
+                                                <BookOpen size={13} />
+                                            </div>
+                                            <span className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Reference Case</span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                            {isDemoChart && (
+                                                <button onClick={() => handleDemoLoad('overview', false)}
+                                                    className="p-1 text-[#7a776e] hover:text-blue-600 hover:bg-blue-50 rounded-md transition-all"
+                                                    title="Reset demo data">
+                                                    <RotateCcw size={12} />
+                                                </button>
+                                            )}
+                                            <button onClick={() => setIsAddRefModalOpen(true)}
+                                                className="p-1 text-[#7a776e] hover:text-green-600 hover:bg-green-50 rounded-md transition-all"
+                                                title="Add reference document">
+                                                {isUploadingCtx ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* URL Input Form - More subtle */}
+                                    <form onSubmit={handleUrlSubmit} className="px-2">
+                                        <div className="relative group/url">
+                                            <input
+                                                type="url"
+                                                placeholder="Fetch evidence from URL..."
+                                                value={urlInput}
+                                                onChange={e => setUrlInput(e.target.value)}
+                                                className="w-full pl-2.5 pr-8 py-2 border border-[#e1e1e0] rounded-xl text-[10px] focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none bg-white transition-all group-hover/url:border-[#d1d1cf]"
+                                            />
+                                            <button
+                                                type="submit"
+                                                disabled={!urlInput.trim() || isFetchingUrl}
+                                                className="absolute right-1 text-blue-500 hover:text-blue-700 disabled:opacity-30 transition-colors bg-blue-50 p-1.5 rounded-lg"
+                                                style={{ top: '50%', transform: 'translateY(-50%)' }}
+                                            >
+                                                {isFetchingUrl ? <Loader2 size={12} className="animate-spin" /> : <Send size={11} />}
+                                            </button>
+                                        </div>
+                                    </form>
+
+                                    <nav className="overflow-y-auto space-y-1 max-h-[160px] pr-1 custom-scrollbar px-1">
+                                        {contextDocs.length === 0
+                                            ? (
+                                                <div className="px-4 py-3 text-[10px] text-[#b0ada7] text-center leading-relaxed bg-[#fcfcfb] rounded-xl border border-[#efefed]">
+                                                    Add support evidence to <br /> strengthen AI reasoning.
+                                                </div>
+                                            )
+                                            : contextDocs.map(doc => (
+                                                <div key={doc.name}
+                                                    className="flex items-center gap-2.5 p-2 rounded-xl text-[11px] group hover:bg-white border border-transparent hover:border-[#e1e1e0] hover:shadow-sm transition-all duration-200">
+                                                    <div className="p-1.5 bg-blue-50 text-blue-500 rounded-lg">
+                                                        <FileText size={12} />
+                                                    </div>
+                                                    <span className="truncate flex-1 text-[#37352f] font-medium">{doc.name}</span>
+                                                    <button onClick={() => handleRemoveContextDoc(doc.name)}
+                                                        className="opacity-0 group-hover:opacity-100 p-1.5 text-[#b0ada7] hover:text-red-500 hover:bg-red-50 rounded-lg transition-all">
+                                                        <X size={12} />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                    </nav>
+                                </div>
+                            </div>
+
+                            {/* Bottom actions refined */}
+                            <div className="mt-auto p-4 bg-white border-t border-[#e1e1e0] space-y-5 rounded-t-xl shadow-[0_-4px_12px_rgba(0,0,0,0.01)] shrink-0 relative z-20">
+                                <div id="system-prompt-container" className="space-y-1.5 relative group">
+                                    <div className="flex items-center gap-1.5 px-1">
+                                        <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">System Instructions</label>
+                                        <div className="group/tip relative translate-y-[-1px]">
+                                            <Info size={11} className="text-[#b0ada7] hover:text-[#37352f] cursor-help transition-colors" />
+                                            <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-[#37352f] text-white text-[10px] rounded-xl opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity z-[100] shadow-2xl leading-relaxed border border-white/10 backdrop-blur-md">
+                                                <div className="font-bold mb-1 opacity-60 uppercase text-[8px] tracking-widest text-blue-300">AI Personality Settings</div>
+                                                In the sidebar, you can tell the AI how to think.
+                                                <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
+                                                    <div>
+                                                        <span className="text-blue-300 font-bold">Patent Attorney?</span><br />
+                                                        Type: <span className="opacity-80 italic">"Be very formal and look for literal infringement."</span>
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-amber-300 font-bold">Electrical Engineer?</span><br />
+                                                        Type: <span className="opacity-80 italic">"Focus only on hardware specs and circuit details."</span>
+                                                    </div>
+                                                </div>
+                                                <div className="absolute top-full left-2 border-4 border-transparent border-t-[#37352f]"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <textarea
+                                        placeholder="Expert legal analyst..."
+                                        value={systemPrompt}
+                                        onChange={(e) => setSystemPrompt(e.target.value)}
+                                        className="w-full px-2.5 py-2 border border-[#e1e1e0] rounded-lg text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] min-h-[70px] resize-none transition-all placeholder:text-[#b0ada7]"
                                     />
                                 </div>
 
-                                <div id="export-options" className="space-y-4 pt-2">
+                                <form id="api-key-container" className="space-y-1.5" onSubmit={(e) => { e.preventDefault(); handleValidateKey(); }}>
+                                    <div className="flex items-center justify-between px-1">
+                                        <div className="flex items-center gap-1.5">
+                                            <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Gemini API Key</label>
+                                            {keyValidationStatus === 'success' && <Check size={10} className="text-green-600" />}
+                                            {keyValidationStatus === 'error' && <AlertTriangle size={10} className="text-red-500" />}
+                                        </div>
+                                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+                                            className="text-[9px] text-blue-600 hover:text-blue-800 hover:underline font-medium">
+                                            Get Key
+                                        </a>
+                                    </div>
+                                    <div className="relative group flex gap-2">
+                                        <div className="relative flex-1">
+                                            <input
+                                                id="api-key-input"
+                                                type="password"
+                                                autoComplete="new-password"
+                                                placeholder="AIzaSy..."
+                                                value={apiKey}
+                                                onChange={(e) => setApiKey(e.target.value)}
+                                                className={`w-full pl-7 pr-2.5 py-2 border rounded-xl text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] transition-all
+                                                    ${keyValidationStatus === 'success' ? 'border-green-200 bg-green-50/10' :
+                                                        keyValidationStatus === 'error' ? 'border-red-200 bg-red-50/10' : 'border-[#e1e1e0]'}`}
+                                            />
+                                            <ShieldCheck size={12} className={`absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors
+                                                ${keyValidationStatus === 'success' ? 'text-green-500' :
+                                                    keyValidationStatus === 'error' ? 'text-red-500' : 'text-[#b0ada7] group-focus-within:text-[#37352f]'}`} />
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleValidateKey}
+                                            disabled={!apiKey.trim() || isValidatingKey}
+                                            className={`px-3 py-2 rounded-xl text-[10px] font-bold transition-all border
+                                                ${keyValidationStatus === 'success' ? 'bg-green-600 border-green-600 text-white' :
+                                                    keyValidationStatus === 'error' ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100' :
+                                                        'bg-white border-[#e1e1e0] text-[#37352f] hover:bg-[#f7f7f5]'}`}
+                                        >
+                                            {isValidatingKey ? <Loader2 size={12} className="animate-spin" /> :
+                                                keyValidationStatus === 'success' ? 'Verified' : 'Validate'}
+                                        </button>
+                                    </div>
+                                    {keyValidationStatus === 'error' && (
+                                        <p className="text-[9px] text-red-500 px-1 font-medium">Invalid key or server unreachable</p>
+                                    )}
+                                </form>
+
+                                <div id="export-options" className="space-y-3 pt-1">
+                                    <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider px-1">Project Actions</label>
                                     <div className="space-y-2">
-                                        <label className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider px-1">Document Actions</label>
                                         <button onClick={() => chartFileRef.current?.click()}
-                                            className="w-full flex items-center gap-2 p-2.5 bg-[#37352f] text-white rounded-lg hover:opacity-90 transition-opacity text-xs font-semibold">
-                                            <Upload size={14} /> Upload Doc
+                                            className="w-full flex items-center justify-center gap-2 p-2.5 bg-[#37352f] text-white rounded-xl hover:bg-[#2c2a26] transition-all text-xs font-bold active:scale-[0.98]">
+                                            <Upload size={14} /> Analyze New Claim
                                         </button>
                                         <button onClick={handleExportClick}
                                             disabled={!activeChart}
-                                            className={`w-full flex items-center gap-2 p-2.5 bg-[#f7f7f5] border border-[#e1e1e0] text-[#37352f] rounded-lg hover:bg-[#efefed] transition-colors text-xs font-semibold
-                                                ${!activeChart ? 'opacity-30 cursor-not-allowed border-dashed' : ''}`}>
+                                            className={`w-full flex items-center justify-center gap-2 p-2.5 bg-white border border-[#e1e1e0] text-[#37352f] rounded-xl hover:bg-[#f7f7f5] transition-all text-xs font-bold active:scale-[0.98]
+                                                ${!activeChart ? 'opacity-40 cursor-not-allowed border-dashed grayscale' : ''}`}>
                                             {isExporting ? <Loader2 size={14} className="animate-spin text-[#7a776e]" /> : <Download size={14} />}
                                             Export DOCX
                                         </button>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider px-1">Chart Actions</label>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <button onClick={handleDownloadState}
-                                                disabled={!activeChart}
-                                                title="Export current chart state as JSON"
-                                                className="flex items-center justify-center gap-1.5 p-2 hover:bg-[#efefed] rounded-lg border border-[#e1e1e0] text-[10px] font-medium transition-colors disabled:opacity-30">
-                                                <Download size={12} /> Export Chat
-                                            </button>
-                                            <button onClick={() => jsonFileRef.current?.click()}
-                                                title="Import a previously exported chart JSON"
-                                                className="flex items-center justify-center gap-1.5 p-2 hover:bg-[#efefed] rounded-lg border border-[#e1e1e0] text-[10px] font-medium transition-colors">
-                                                <Upload size={12} /> Import Chat
-                                            </button>
-                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -843,22 +1211,34 @@ const App: React.FC = () => {
                             )}
                         </div>
                         <div className="flex items-center gap-2">
+                            {/* Original Demo Load Button */}
                             <button
                                 id="demo-btn"
-                                onClick={handleDemoLoad}
-                                disabled={isUploading}
+                                onClick={() => handleDemoLoad('overview', false)}
+                                disabled={isDemoLoading}
+                                title="Load sample Acme Corp case study (no tour)"
                                 className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg text-xs font-medium hover:bg-blue-100 transition-colors disabled:opacity-50"
                             >
-                                {isUploading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Demo
+                                {isDemoLoading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Sample Data
                             </button>
+
+                            {/* Scenario Walkthrough Selector */}
                             <button
-                                id="walkthrough-btn"
-                                onClick={() => setRunTour(true)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f7f7f5] border border-[#e1e1e0] text-[#37352f] rounded-lg text-xs font-medium hover:bg-[#efefed] transition-colors"
+                                onClick={() => { setRunTour(false); setShowDemoSelector(true); }}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#f7f7f5] border border-[#e1e1e0] text-[#37352f] rounded-lg text-xs font-bold hover:bg-[#efefed] transition-colors"
                             >
-                                <BookOpen size={14} /> {isDemoChart ? 'Show Demo Tour' : 'How to use'}
+                                <Play size={14} fill="currentColor" /> Interactive Demo
+                            </button>
+
+                            <button
+                                id="quality-dashboard-btn"
+                                onClick={() => setIsQualityViewOpen(true)}
+                                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 border border-purple-200 text-purple-700 rounded-lg text-xs font-medium hover:purple-100 transition-colors"
+                            >
+                                <ShieldCheck size={14} /> Quality Dashboard
                             </button>
                             <button onClick={() => setChatOpen(!chatOpen)}
+                                id="chat-toggle"
                                 className={`p-1.5 rounded hover:bg-[#efefed] ${chatOpen ? 'text-[#37352f]' : 'text-[#7a776e]'}`}>
                                 <MessageSquare size={18} />
                             </button>
@@ -876,8 +1256,13 @@ const App: React.FC = () => {
                         </div>
 
                         {elements.length > 0 ? (
-                            <div className="border border-[#e1e1e0] rounded bg-white overflow-hidden">
-                                <ClaimTable elements={elements} onSelectElement={el => setSelectedElementId(el.id)} selectedId={selectedElementId} />
+                            <div className="border border-[#e1e1e0] rounded-xl bg-white overflow-hidden">
+                                <ClaimTable
+                                    elements={elements}
+                                    onSelectElement={el => setSelectedElementId(el.id)}
+                                    onAddElement={handleAddNewElement}
+                                    selectedId={selectedElementId}
+                                />
                             </div>
                         ) : (
                             <div className="border border-[#e1e1e0] rounded-lg p-10 bg-white flex flex-col items-center justify-center text-center">
@@ -885,30 +1270,47 @@ const App: React.FC = () => {
                                     {isUploading ? <Loader2 size={32} className="text-[#37352f] animate-spin" /> : <Upload size={32} className="text-[#7a776e]" />}
                                 </div>
                                 <h3 className="text-lg font-semibold mb-2">
-                                    {isUploading ? 'Parsing claim chart...' : 'Upload a claim chart'}
+                                    {isUploading ? 'Analyzing new claim...' : 'Analyze a new claim'}
                                 </h3>
                                 <p className="text-[#7a776e] text-sm mb-6 max-w-sm">
-                                    {isUploading ? 'Gemini AI is extracting claim elements into a structured grid.' : 'Upload a PDF or DOCX claim chart. Then add reference docs for AI context.'}
+                                    {isUploading ? 'Gemini AI is extracting claim elements into a structured grid.' : 'Upload a PDF or DOCX patent claim chart to start. (Tip: Check the Test/ folder for sample documents).'}
                                 </p>
                                 <button onClick={() => chartFileRef.current?.click()} disabled={isUploading}
                                     className="bg-[#37352f] text-white px-5 py-2 rounded font-medium text-sm hover:opacity-90 disabled:opacity-50">
-                                    {isUploading ? 'Processing...' : 'Browse Files'}
+                                    {isUploading ? 'Processing...' : 'Upload Claim PDF/DOCX'}
                                 </button>
                             </div>
                         )}
                     </main>
 
-                    {/* Hidden inputs */}
-                    <input type="file" ref={chartFileRef} onChange={handleChartUpload} className="hidden" accept=".pdf,.docx" />
-                    <input type="file" ref={ctxFileRef} onChange={handleContextUpload} className="hidden" accept=".pdf,.docx" />
-                    <input type="file" ref={jsonFileRef} onChange={handleUploadState} className="hidden" accept=".json" />
-
-                    {!chatOpen && (
-                        <button onClick={() => setChatOpen(true)}
-                            className="absolute bottom-6 right-6 bg-[#37352f] text-white p-3 rounded-full shadow-xl hover:scale-105 transition-transform">
-                            <MessageSquare size={22} />
-                        </button>
-                    )}
+                    <AddReferenceModal
+                        isOpen={isAddRefModalOpen}
+                        onClose={() => setIsAddRefModalOpen(false)}
+                        onUploadFile={async (file) => {
+                            // Manual file injection to trigger existing handler
+                            handleContextUpload({ target: { files: [file] } } as any);
+                        }}
+                        onAddUrl={async (url) => {
+                            try {
+                                const res = await api.post('/api/fetch-url', { url });
+                                if (res.data.doc) {
+                                    setCharts(prev => prev.map(c => c.id === activeChartId
+                                        ? { ...c, contextDocs: [...c.contextDocs, res.data.doc] }
+                                        : c
+                                    ));
+                                }
+                            } catch (err) {
+                                console.error('URL fetch error:', err);
+                                throw err;
+                            }
+                        }}
+                        onAddText={(name, text) => {
+                            setCharts(prev => prev.map(c => c.id === activeChartId
+                                ? { ...c, contextDocs: [...c.contextDocs, { name, text }] }
+                                : c
+                            ));
+                        }}
+                    />
                 </div>
 
                 {/* ── Chat Pane ── */}
@@ -920,12 +1322,23 @@ const App: React.FC = () => {
                                 <MessageSquare size={14} />
                                 <span className="font-semibold text-xs">Lumenci Chat</span>
                                 {selectedElement && (
-                                    <span className="font-mono text-[10px] bg-[#e1e1e0] px-1.5 py-0.5 rounded">
+                                    <span className="font-mono text-[10px] bg-[#e1e1e0] px-1.5 py-0.5 rounded-lg">
                                         {selectedElement.id}
                                     </span>
                                 )}
                             </div>
                             <div className="flex items-center gap-1">
+                                <button onClick={handleDownloadState}
+                                    disabled={!activeChart}
+                                    title="Export current chart state as JSON"
+                                    className="p-1 hover:bg-[#efefed] rounded text-[#7a776e] hover:text-[#37352f] disabled:opacity-30">
+                                    <Download size={14} />
+                                </button>
+                                <button onClick={() => jsonFileRef.current?.click()}
+                                    title="Import a previously exported chart JSON"
+                                    className="p-1 hover:bg-[#efefed] rounded text-[#7a776e] hover:text-[#37352f]">
+                                    <Upload size={14} />
+                                </button>
                                 {selectedElement && selectedElement.versions && selectedElement.versions.length > 0 && (
                                     <button
                                         onClick={() => handleRefine('Undo the last change.')}
@@ -1027,6 +1440,7 @@ const App: React.FC = () => {
                                                     /undo|revert|rollback/i.test(msg.content)
                                                 ) : undefined}
                                                 onReject={isPending ? () => handleRejectChange(activeChartId!, selectedElementId!, idx) : undefined}
+                                                onFeedback={(type) => handleFeedback(selectedElementId!, idx, type)}
                                             />
                                         );
                                     })}
@@ -1099,12 +1513,12 @@ const App: React.FC = () => {
                                             handleRefine();
                                         }
                                     }}
-                                    className="w-full border border-[#e1e1e0] rounded-lg p-2 pr-9 text-xs focus:outline-none focus:ring-1 focus:ring-[#37352f] resize-none disabled:bg-[#f7f7f5] disabled:cursor-not-allowed"
+                                    className="w-full border border-[#e1e1e0] rounded-lg p-2.5 pr-10 text-xs focus:outline-none focus:ring-1 focus:ring-[#37352f] resize-none disabled:bg-[#f7f7f5] disabled:cursor-not-allowed"
                                     rows={3}
                                 />
                                 <button onClick={() => handleRefine()}
                                     disabled={!chatInput.trim() || isRefining}
-                                    className="absolute right-2 bottom-2 text-white bg-[#37352f] rounded-md p-1.5 hover:opacity-90 disabled:opacity-30">
+                                    className="absolute right-2.5 bottom-2.5 text-white bg-[#37352f] rounded-md p-1.5 hover:opacity-90 disabled:opacity-30">
                                     {isRefining ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
                                 </button>
                             </div>
@@ -1113,14 +1527,74 @@ const App: React.FC = () => {
                 )}
             </div>
 
+            {/* ── Overlays ── */}
+            <QualityScorecard
+                isOpen={isQualityViewOpen}
+                onClose={() => setIsQualityViewOpen(false)}
+                elements={elements}
+                onRunAudit={handleRunAudit}
+                onAuditStale={handleAuditStale}
+                onAuditAll={handleAuditAll}
+                isAuditing={auditingId}
+            />
+
+            {/* Hidden inputs */}
+            <input type="file" ref={chartFileRef} onChange={handleChartUpload} className="hidden" accept=".pdf,.docx" />
+            <input type="file" ref={ctxFileRef} onChange={handleContextUpload} className="hidden" accept=".pdf,.docx" />
+            <input type="file" ref={jsonFileRef} onChange={handleUploadState} className="hidden" accept=".json" />
+
+            {
+                !chatOpen && (
+                    <button onClick={() => setChatOpen(true)}
+                        className="absolute bottom-6 right-6 bg-[#37352f] text-white p-3 rounded-xl border border-[#37352f] transition-all z-30 active:scale-95">
+                        <MessageSquare size={22} />
+                    </button>
+                )
+            }
+
             {/* Export Warning Modal */}
-            {showExportModal && activeChart && (
-                <ExportWarningModal
-                    elements={elements}
-                    onExportAnyway={doExport}
-                    onCancel={() => setShowExportModal(false)}
-                />
-            )}
+            {
+                showExportModal && activeChart && (
+                    <ExportWarningModal
+                        elements={elements}
+                        onExportAnyway={doExport}
+                        onCancel={() => setShowExportModal(false)}
+                    />
+                )
+            }
+
+            <Joyride
+                steps={getTourSteps()}
+                run={runTour}
+                continuous
+                showProgress
+                showSkipButton
+                styles={{
+                    options: {
+                        primaryColor: '#37352f',
+                        zIndex: 1000,
+                    },
+                }}
+                callback={(data) => {
+                    const { status } = data;
+                    if (status === 'finished' || status === 'skipped') {
+                        setRunTour(false);
+                        // Return to demo selector after tour
+                        if (activeChartId === 'demo-chart') {
+                            setShowDemoSelector(true);
+                        }
+                    }
+                }}
+            />
+
+            <DemoSelectorModal
+                isOpen={showDemoSelector}
+                onClose={() => {
+                    setShowDemoSelector(false);
+                    setRunTour(false);
+                }}
+                onSelectDemo={(path) => handleDemoLoad(path, true)}
+            />
         </div>
     );
 };

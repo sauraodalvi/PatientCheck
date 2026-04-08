@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import { parseDocument, extractText } from '../utils/parser';
-import { generateRefinement } from '../utils/gemini';
+import { generateRefinement, runAudit, runBatchAudit } from '../utils/gemini';
 import { generateDocx } from '../utils/exporter';
 import fs from 'fs';
 
@@ -61,7 +61,7 @@ router.post('/upload-context', upload.single('file'), async (req, res) => {
 
 // POST /api/refine — stateless AI refinement with full doc context
 router.post('/refine', async (req, res) => {
-    const { elementId, element, evidence, reasoning, query, contextDocs, chatHistory, apiKey } = req.body;
+    const { elementId, element, evidence, reasoning, query, contextDocs, chatHistory, apiKey, systemPrompt } = req.body;
     const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
 
     if (!elementId || !query) {
@@ -70,7 +70,7 @@ router.post('/refine', async (req, res) => {
 
     try {
         const context = `Claim Element Text: ${element}\nCurrent Evidence: ${evidence || '(none)'}\nCurrent Reasoning: ${reasoning || '(none)'}`;
-        const refinement = await generateRefinement(elementId, context, query, contextDocs || [], chatHistory || [], customApiKey);
+        const refinement = await generateRefinement(elementId, context, query, contextDocs || [], chatHistory || [], customApiKey, systemPrompt);
 
         res.json({
             message: 'Refinement complete',
@@ -82,9 +82,17 @@ router.post('/refine', async (req, res) => {
             proposedChange: refinement.proposedChange ?? false,
             noChangeNeeded: refinement.noChangeNeeded ?? false
         });
-    } catch (error) {
-        console.error('Refinement error:', error);
-        res.status(500).json({ message: 'Error refining element' });
+    } catch (error: any) {
+        console.error('Refinement route error handler:', {
+            message: error.message,
+            stack: error.stack,
+            elementId,
+            queryCount: query?.length
+        });
+        res.status(500).json({
+            message: 'Error refining element',
+            details: error.message || 'Unknown error'
+        });
     }
 });
 
@@ -153,6 +161,85 @@ router.post('/upload-context-data', async (req, res) => {
     const { name, text } = req.body;
     if (!name || !text) return res.status(400).json({ message: 'name and text are required' });
     res.json({ message: 'Context doc received', doc: { name, text } });
+});
+
+// POST /api/fetch-url — simple "scrappy" web scraper for patent documentation
+router.post('/fetch-url', async (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ message: 'url is required' });
+
+    try {
+        console.log('Fetching context from URL:', url);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+        const html = await response.text();
+
+        // Scrappy HTML-to-Text: Remove scripts, styles, and tags
+        const cleanText = html
+            .replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gmi, '')
+            .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gmi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        res.json({
+            message: 'URL fetched successfully',
+            doc: {
+                name: new URL(url).hostname + '...',
+                text: cleanText.substring(0, 15000) // limit context size
+            }
+        });
+    } catch (error: any) {
+        console.error('URL Fetch error:', error);
+        res.status(500).json({ message: `Error fetching URL: ${error.message}` });
+    }
+});
+
+
+// POST /api/audit — deep quality audit for a specific element
+router.post('/audit', async (req, res) => {
+    const { element, evidence, reasoning, contextDocs, apiKey } = req.body;
+    const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
+
+    if (!element || !evidence || !reasoning) {
+        return res.status(400).json({ message: 'element, evidence, and reasoning are required' });
+    }
+
+    try {
+        const auditResult = await runAudit(element, evidence, reasoning, contextDocs || [], customApiKey);
+        res.json({
+            message: 'Audit complete',
+            audit: auditResult
+        });
+    } catch (error: any) {
+        console.error('Audit route error:', error);
+        const status = error.status || (error.message?.includes('429') ? 429 : 500);
+        res.status(status).json({ message: `Audit failed: ${error.message}` });
+    }
+});
+
+// POST /api/audit-batch — batch quality audit for multiple elements
+router.post('/audit-batch', async (req, res) => {
+    const { elements, contextDocs, apiKey } = req.body;
+    const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
+
+    if (!elements || !Array.isArray(elements) || elements.length === 0) {
+        return res.status(400).json({ message: 'elements array is required' });
+    }
+
+    try {
+        console.log(`Starting batch audit for ${elements.length} elements`);
+        const batchResults = await runBatchAudit(elements, contextDocs || [], customApiKey);
+        res.json({
+            message: 'Batch audit complete',
+            results: batchResults.results || []
+        });
+    } catch (error: any) {
+        console.error('Batch Audit route error:', error);
+        const status = error.status || (error.message?.includes('429') ? 429 : 500);
+        res.status(status).json({ message: `Batch audit failed: ${error.message}` });
+    }
 });
 
 export default router;

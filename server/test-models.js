@@ -30,11 +30,7 @@ async function testModel(name) {
 
 async function main() {
     for (const m of modelsToTest) {
-        const ok = await testModel(m);
-        if (ok) {
-            console.log(`\n>>> RECOMMENDED MODEL: "${m}"`);
-            break;
-        }
+        await testModel(m);
     }
 }
 

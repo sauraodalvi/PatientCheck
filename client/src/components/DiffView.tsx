@@ -57,7 +57,7 @@ const DiffView: React.FC<DiffViewProps> = ({ oldText, newText, label }) => {
             {!hasChanges ? (
                 <p className="text-[#7a776e] italic">No text changes proposed.</p>
             ) : (
-                <div className="bg-[#f7f7f5] border border-[#e1e1e0] rounded p-2 whitespace-pre-wrap font-mono">
+                <div className="bg-[#f7f7f5] border border-[#e1e1e0] rounded-xl p-3 whitespace-pre-wrap font-mono">
                     {ops.map((op, i) => {
                         if (op.type === 'same') {
                             return <span key={i}>{op.text}</span>;
