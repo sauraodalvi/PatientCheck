@@ -1,62 +1,63 @@
-# Customer Support Triage AI (PatientCheck)
+# PatientCheck AI 🧬⚖️
 
-An advanced, AI-powered platform for patent professionals to automate the extraction, analysis, and refinement of claim elements. 
+**PatientCheck** is an open-source, high-fidelity AI assistant designed for patent professionals, litigation analysts, and legal tech innovators. By bridging the gap between raw legal documents and defensible claim mappings, it transforms the traditionally manual patent audit process into a streamlined, AI-optimized workflow.
 
-## 🚀 Key Features
+> [!IMPORTANT]
+> **API Requirement:** This project requires a **Google Gemini API Key** (standardized on `gemini-2.5-flash`). You can provide this in the Mission Control sidebar or via environment variables.
 
-- **Automated Claim Extraction**: Instantly parse PDF and DOCX files to extract claim elements into a structured grid.
-- **AI-Powered Refinement**: Refine evidence and reasoning with context-aware AI suggestions powered by Google Gemini.
-- **NexaTherm Pro Demo**: A comprehensive, built-in demo (NexaTherm Pro NXT-2000) showcasing realistic infringement scenarios, including strong matches and evidence conflicts.
-- **Context-Aware Suggestions**: Dynamic "Suggestion Chips" that guide users through common refinement tasks based on the matched status of each element.
-- **Interactive Guided Tour**: A step-by-step walkthrough to help new users master the platform's features within minutes.
-- **Robust DOCX Export**: One-click professional report generation with properly formatted tables and evidence citations.
+---
 
-## 🛠️ Technology Stack
+## 🚀 The Product Vision
+Built from the perspective of a **Product Manager & AI Builder**, PatientCheck is centered around **Legal Defensibility**. 
 
-- **Frontend**: React, Vite, Tailwind CSS, Lucide Icons, React Joyride.
-- **Backend**: Node.js, Express, Axios.
-- **AI**: Integrates with **Google Gemini AI** for intelligent document parsing and claim refinement.
-- **Storage**: Local browser storage for charts and session persistence.
+Unlike generic AI tools that simply summarize text, PatientCheck acts as a "Senior Attorney" judge. It identifies hedging language (e.g., "suggests", "appears to"), verifies specific § section citations, and generates a **Legal Defensibility Score (LDS)** to ensure every mapping is courtroom-ready.
+
+## ✨ Key Features
+- **📊 AI Quality Scorecard:** Quantitative LDS metrics (0-100%) to instantly identify weak mappings.
+- **🔍 AI Audit Judge:** Automated auditing for citation accuracy, technical precision, and legally weak language.
+- **📄 Robust Document Parsing:** Instant extraction of structured claim elements from complex PDF and DOCX files.
+- **💬 Interactive Refinement:** A collaborative AI chat interface with "Suggestion Chips" to iterate on evidence and reasoning.
+- **🔄 Batch Auditing:** High-performance throughput to audit entire claim charts in a single pass.
+- **📂 Professional Export:** One-click generation of refined claim charts into industry-standard DOCX format.
+
+## 🛠️ The Specs (AI Builder Stack)
+- **AI Infrastructure:** Google Gemini 2.5 Flash (utilizing v1beta for advanced reasoning and speed).
+- **Frontend:** React 19 + Vite + Tailwind CSS (featuring a premium glassmorphic/dark-mode UI).
+- **Backend:** Node.js + Express + TypeScript.
+- **UX/Onboarding:** Integrated guided tours via `react-joyride` and real-time interactive diff views.
 
 ## 🚦 Getting Started
 
 ### Prerequisites
+- Node.js (v20+)
+- npm / yarn / pnpm
+- Google Gemini API Key ([Get one here](https://aistudio.google.com/))
 
-- Node.js (v18 or higher)
-- npm or yarn
-- Google Gemini API Key
+### Quick Setup
 
-### Installation
-
-1. **Clone the repository**:
+1. **Clone & Install**
    ```bash
    git clone https://github.com/sauraodalvi/PatientCheck.git
    cd PatientCheck
    ```
 
-2. **Setup Server**:
+2. **Backend Setup**
    ```bash
    cd server
    npm install
-   # Create a .env file with your API key (optional, can be entered in UI)
-   # GEMINI_API_KEY=your_key_here
+   # Create .env with GEMINI_API_KEY=your_key
    npm run dev
    ```
 
-3. **Setup Client**:
+3. **Frontend Setup**
    ```bash
    cd ../client
    npm install
    npm run dev
    ```
 
-## 📝 Usage
-
-1. **Enter API Key**: Provide your Gemini API key in the sidebar.
-2. **Load a Chart**: Use the "New Chart" button or click "Demo" to explore with pre-loaded data.
-3. **Refine Elements**: Select a claim element to view AI feedback and refinement chips in the chat pane.
-4. **Export Results**: Download your refined claim chart as a professional DOCX document.
+## 🤝 Open Source & Community
+PatientCheck is **100% Free and Open Source**. It was built to advance the intersection of AI and Intellectual Property. Pull requests, issues, and strategic feedback from patent pros and devs are always welcome.
 
 ---
-
-*Developed for high-efficiency patent analysis workflow.*
+*Built with a PM's focus on user value and an AI Builder's focus on technical robustness.*
