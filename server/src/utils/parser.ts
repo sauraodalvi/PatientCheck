@@ -9,7 +9,7 @@ dotenv.config();
 
 
 const defaultGenAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
-const defaultModel = defaultGenAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const defaultModel = defaultGenAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 /** Extract raw text from a PDF or DOCX buffer (no AI structuring). */
 export async function extractText(fileBuffer: Buffer, mimeType: string): Promise<string> {
@@ -35,7 +35,7 @@ export async function parseDocument(fileBuffer: Buffer, mimeType: string, custom
     let model = defaultModel;
     if (customApiKey) {
         const customAI = new GoogleGenerativeAI(customApiKey);
-        model = customAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        model = customAI.getGenerativeModel({ model: "gemini-2.0-flash" });
     }
 
     let text: string;

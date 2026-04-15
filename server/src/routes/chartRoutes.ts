@@ -3,6 +3,7 @@ import multer from 'multer';
 import { parseDocument, extractText } from '../utils/parser';
 import { generateRefinement, runAudit, runBatchAudit } from '../utils/gemini';
 import { generateDocx } from '../utils/exporter';
+import { chunkText, buildIndex, retrieveTopK, clearIndex } from '../utils/rag';
 import fs from 'fs';
 
 const router = express.Router();
@@ -41,53 +42,132 @@ router.post('/upload', upload.array('files'), async (req: any, res) => {
     }
 });
 
-// POST /api/upload-context — extract raw text from a reference doc (DOC2/3/4/5)
-router.post('/upload-context', upload.single('file'), async (req, res) => {
+// POST /api/upload-context — extract raw text from multiple reference docs (DOC2/3/4/5)
+router.post('/upload-context', upload.array('files'), async (req, res) => {
     try {
-        if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+        const files = req.files as Express.Multer.File[];
+        if (!files || files.length === 0) return res.status(400).json({ message: 'No files uploaded' });
 
-        const fileBuffer = Buffer.from(req.file.buffer);
-        const text = await extractText(fileBuffer, req.file.mimetype);
+        const docs = await Promise.all(files.map(async (file) => {
+            const fileBuffer = Buffer.from(file.buffer);
+            const text = await extractText(fileBuffer, file.mimetype);
+            return { name: file.originalname, text };
+        }));
 
         res.status(200).json({
-            message: 'Reference doc extracted successfully',
-            doc: { name: req.file.originalname, text }
+            message: `${docs.length} reference documents extracted successfully`,
+            docs
         });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: 'Error processing reference document' });
+        res.status(500).json({ message: 'Error processing reference documents' });
     }
 });
 
-// POST /api/refine — stateless AI refinement with full doc context
-router.post('/refine', async (req, res) => {
-    const { elementId, element, evidence, reasoning, query, contextDocs, chatHistory, apiKey, systemPrompt } = req.body;
+// POST /api/index-docs — chunk and build vector index for reference docs
+router.post('/index-docs', async (req: any, res) => {
+    const { docs, sessionId, apiKey } = req.body;
     const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
+
+    if (!docs || !Array.isArray(docs) || !sessionId) {
+        return res.status(400).json({ message: 'docs array and sessionId are required' });
+    }
+
+    try {
+        console.log(`[ROUTE] Indexing ${docs.length} docs for session ${sessionId}. API key present: ${!!customApiKey}`);
+        let allChunks: any[] = [];
+        for (const doc of docs) {
+            const chunks = chunkText(doc.text, doc.name);
+            console.log(`[ROUTE] Document "${doc.name}" yielded ${chunks.length} chunks`);
+            allChunks.push(...chunks);
+        }
+
+        console.log(`[ROUTE] Total chunks to index: ${allChunks.length}`);
+        const count = await buildIndex(sessionId, allChunks, customApiKey);
+        res.json({ message: 'Documents indexed successfully', sessionId, chunkCount: count });
+    } catch (error: any) {
+        console.error('[ROUTE] Indexing error:', {
+            message: error.message,
+            stack: error.stack,
+            sessionId
+        });
+        res.status(500).json({
+            message: 'Error indexing documents',
+            details: error.message,
+            stack: error.stack, // Temp inclusion for debug
+            sessionId
+        });
+    }
+});
+
+// POST /api/retrieve — query the vector index for a session
+router.post('/retrieve', async (req: any, res) => {
+    const { query, sessionId, apiKey, k, threshold } = req.body;
+    const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
+
+    if (!query || !sessionId) {
+        return res.status(400).json({ message: 'query and sessionId are required' });
+    }
+
+    try {
+        const result = await retrieveTopK(sessionId, query, customApiKey, k, threshold);
+        res.json(result);
+    } catch (error: any) {
+        console.error('Retrieval error:', error);
+        res.status(500).json({ message: 'Error during retrieval', details: error.message });
+    }
+});
+
+// POST /api/refine — AI refinement with context (optionally RAG chunks)
+router.post('/refine', async (req, res) => {
+    const {
+        elementId, element, evidence, reasoning, query,
+        contextDocs, chatHistory, apiKey, systemPrompt,
+        retrievedChunks, topScore, noEvidenceFound
+    } = req.body;
+
+    const customApiKey = (req.headers['x-gemini-api-key'] as string) || apiKey;
+    const hasChartEvidence = req.body.hasChartEvidence ?? (!!evidence && evidence.trim().length > 0 && !evidence.includes("MISSING"));
 
     if (!elementId || !query) {
         return res.status(400).json({ message: 'elementId and query are required' });
     }
 
     try {
-        const context = `Claim Element Text: ${element}\nCurrent Evidence: ${evidence || '(none)'}\nCurrent Reasoning: ${reasoning || '(none)'}`;
-        const refinement = await generateRefinement(elementId, context, query, contextDocs || [], chatHistory || [], customApiKey, systemPrompt);
+        const refinement = await generateRefinement(
+            elementId,
+            `Requirement: ${element}\nCurrent Evidence: ${evidence}\nCurrent Reasoning: ${reasoning}`,
+            query,
+            contextDocs || [],
+            chatHistory || [],
+            customApiKey,
+            systemPrompt,
+            retrievedChunks,
+            topScore,
+            noEvidenceFound,
+            hasChartEvidence
+        );
 
         res.json({
             message: 'Refinement complete',
-            refinedReasoning: refinement.refinedReasoning || '',
-            refinedEvidence: refinement.refinedEvidence || '',
-            confidence: refinement.confidence ?? 100,
-            flags: refinement.flags || [],
-            explanation: refinement.explanation || '',
-            proposedChange: refinement.proposedChange ?? false,
-            noChangeNeeded: refinement.noChangeNeeded ?? false
+            refinement: {
+                refinedReasoning: refinement.refinedReasoning || '',
+                refinedEvidence: refinement.refinedEvidence || '',
+                confidence: refinement.confidence ?? 100,
+                flags: refinement.flags || [],
+                explanation: refinement.explanation || '',
+                proposedChange: refinement.proposedChange ?? false,
+                noChangeNeeded: refinement.noChangeNeeded ?? false,
+                isConflictResolved: refinement.isConflictResolved ?? false,
+                sourceArbitrationDetails: refinement.sourceArbitrationDetails || ''
+            }
         });
     } catch (error: any) {
         console.error('Refinement route error handler:', {
             message: error.message,
             stack: error.stack,
-            elementId,
-            queryCount: query?.length
+            elementId: req.body.elementId,
+            queryCount: req.body.query?.length
         });
         res.status(500).json({
             message: 'Error refining element',

@@ -22,6 +22,13 @@ export interface ChatTurn {
   content: string;
 }
 
+export interface RetrievedChunk {
+  text: string;
+  source: string;
+  section: string;
+  score: number;
+}
+
 export async function generateRefinement(
   elementId: string,
   context: string,
@@ -29,17 +36,48 @@ export async function generateRefinement(
   contextDocs: ContextDoc[] = [],
   chatHistory: ChatTurn[] = [],
   customApiKey?: string,
-  systemPrompt?: string
+  systemPrompt?: string,
+  retrievedChunks?: RetrievedChunk[],
+  topScore: number = 0,
+  noEvidenceFound: boolean = false,
+  hasChartEvidence: boolean = false
 ) {
   const genAI = getGenAI(customApiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-  // Build reference documents section
-  const docsSection = contextDocs.length > 0
-    ? contextDocs.map(doc =>
+  // Build reference documents section (RAG preferred)
+  let docsSection = "";
+  if (retrievedChunks && retrievedChunks.length > 0) {
+    docsSection = "=== GROUNDED EVIDENCE (RAG) ===\n" +
+      retrievedChunks.map(c =>
+        `[Document: ${c.source} | Section: ${c.section} | Score: ${c.score.toFixed(2)}]\n"${c.text}"`
+      ).join('\n\n');
+  } else if (contextDocs.length > 0) {
+    docsSection = contextDocs.map(doc =>
       `=== DOCUMENT: "${doc.name}" ===\n${doc.text.substring(0, 8000)}\n`
-    ).join('\n')
-    : '(No reference documents uploaded. Do NOT fabricate any technical specifications.)';
+    ).join('\n');
+  } else {
+    docsSection = '(No reference documents currently indexed for search. Rely on existing chart evidence if present.)';
+  }
+
+  // Grounding Guardrails Injection
+  let groundingGuardrail = "";
+  if (noEvidenceFound && !hasChartEvidence) {
+    groundingGuardrail = `
+⚠️ SYSTEM GUARDRAIL — NO EVIDENCE FOUND IN ANY SOURCE:
+1. You MUST set "refinedEvidence" to exactly "MISSING: No supporting evidence found in documents."
+2. In "refinedReasoning", explain precisely what is missing.
+3. Set "confidence" to exactly ${Math.round(topScore * 100)}.
+4. Do NOT attempt to infer or suggest specifications.
+`;
+  } else if (noEvidenceFound && hasChartEvidence) {
+    groundingGuardrail = `
+ℹ️ RAG Search returned no new matches, but the chart already has evidence.
+1. Use the "Current Evidence" provided below.
+2. Clearly state that you are using existing evidence because search found no additional matches.
+3. Your peak confidence should be capped at 85% since recent document search was inconclusive.
+`;
+  }
 
   // Build prior conversation section
   const historySection = chatHistory.map(t => `${t.role === 'user' ? 'Analyst' : 'AI'}: ${t.content}`).join('\n');
@@ -50,9 +88,10 @@ You are an expert patent litigation analyst assistant. Your role is to help stre
 STRICT RULES — violating any of these is a critical error:
 1. NEVER fabricate, invent, or assume any technical specifications not explicitly stated in the provided reference documents.
 2. NEVER use hedging language in legal reasoning: forbidden words are "probably", "likely", "may", "might", "appears to", "suggests", "could", "seems".
-3. If asked to find evidence but no relevant document is uploaded, say clearly "I cannot find this in the provided documents" and explain what document type is needed. Do NOT invent evidence.
+3. Use ONLY the provided evidence. If the information is missing or insufficient to support the claim, set reasoning to indicate lack of evidence.
 4. Always cite specific section numbers (e.g., "§3.1") when referencing document content.
-5. If asked to add a new claim element without being given the exact patent claim language, ask for it first.
+5. CALIBRATED CONFIDENCE: Your confidence must match the retrieval quality.
+${groundingGuardrail}
 `;
 
   const prompt = `
@@ -66,21 +105,26 @@ Element ID: ${elementId}
 ${context}
 
 ${historySection ? `--- PRIOR CONVERSATION ---\n${historySection}\n` : ''}
+
 --- ANALYST REQUEST ---
 ${query}
 
 Respond with a JSON object in this exact format:
 {
-  "refinedReasoning": "string — the new/updated reasoning text, or empty string if no change",
-  "refinedEvidence": "string — the new/updated evidence text, or empty string if no change",
-  "confidence": <number 0-100>,
-  "flags": ["string — list of weaknesses or concerns, empty array if none"],
-  "explanation": "string — explanation to show analyst in chat, citing specific §sections if referencing docs",
-  "proposedChange": <boolean — true if this response includes a rewrite of reasoning or evidence that needs analyst approval>,
-  "noChangeNeeded": <boolean — true if the element is already strong and no rewrite is suggested>
+  "refinedReasoning": "string — explain what is found or what is missing",
+  "refinedEvidence": "string — either the source quote with cite, or 'MISSING'",
+  "confidence": ${Math.round(topScore * 100)},
+  "flags": ["string — list of weaknesses, e.g. 'Ungrounded Prediction'"],
+  "explanation": "string — technical breakdown for the analyst",
+  "proposedChange": true,
+  "noChangeNeeded": false,
+  "isConflictResolved": boolean,
+  "sourceArbitrationDetails": "string — explain if you chose one DOC over another due to versions/recency"
 }
 
-If the element is already well-evidenced and you are confirming its strength, set noChangeNeeded=true and do not rewrite any text.
+Note: If multiple documents (e.g. DOC2 vs DOC5) provide conflicting specs, ARBITRATE based on recency or explicit version numbers (e.g. NXT-2000 > NXT-1000). 
+If you resolve such a conflict, set "isConflictResolved" to true and justify your choice in "sourceArbitrationDetails".
+If the element is already well-evidenced, confirm its strength and set noChangeNeeded = true.
 `;
 
   const maxRetries = 3;
@@ -97,11 +141,7 @@ If the element is already well-evidenced and you are confirming its strength, se
       } catch (e: any) {
         console.error("Gemini safety block or empty response:", {
           message: e.message,
-          feedback: response.promptFeedback,
-          candidates: response.candidates?.map((c: any) => ({
-            finishReason: c.finishReason,
-            safetyRatings: c.safetyRatings
-          }))
+          feedback: response.promptFeedback
         });
         throw new Error(`AI response blocked or failed: ${e.message}`);
       }
@@ -110,11 +150,31 @@ If the element is already well-evidenced and you are confirming its strength, se
         throw new Error("Empty response from Gemini API");
       }
 
-      // Attempt to extract JSON from markdown or plain text
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
-          return JSON.parse(jsonMatch[0]);
+          const parsed = JSON.parse(jsonMatch[0]);
+
+          // --- EVIDENCE ARBITRATION CALIBRATION ---
+          if (parsed.isConflictResolved) {
+            // Apply penalty for resolving ambiguity (80-85% max)
+            parsed.confidence = Math.round(parsed.confidence * 0.82);
+            if (!parsed.flags) parsed.flags = [];
+            parsed.flags.push("Conflict Resolved via Arbitration");
+          }
+
+          // Force LDS cap if no evidence found at all
+          if (noEvidenceFound && !hasChartEvidence) {
+            parsed.refinedEvidence = "MISSING: No supporting evidence found in documents.";
+            parsed.confidence = Math.min(parsed.confidence, Math.round(topScore * 100));
+          } else if (noEvidenceFound && hasChartEvidence) {
+            // High confidence allowed but capped to 90% to reflect "no new validation"
+            parsed.confidence = Math.min(parsed.confidence, 90);
+            if (!parsed.flags) parsed.flags = [];
+            parsed.flags.push("Validated via Existing Evidence");
+          }
+
+          return parsed;
         } catch (parseError: any) {
           console.error("JSON Parse Error on Gemini response:", parseError.message, "Text:", text);
           throw new Error(`Failed to parse AI JSON response: ${parseError.message}`);
@@ -130,39 +190,26 @@ If the element is already well-evidenced and you are confirming its strength, se
       const is429 = error.message?.includes('429') || error.status === 429;
 
       if ((is503 || is429) && attempt < maxRetries) {
-        const delay = attempt * 3000; // 3s, 6s, 9s
-        console.warn(`Gemini API ${is429 ? 'Rate Limit (429)' : 'High Demand (503)'} on attempt ${attempt}. Retrying in ${delay / 1000}s...`);
+        const delay = attempt * 3000;
+        console.warn(`Gemini API ${is429 ? 'Rate Limit' : 'High Demand'} on attempt ${attempt}. Retrying...`);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
-
-      console.error("Gemini AI Error in generateRefinement:", {
-        message: error.message,
-        stack: error.stack,
-        elementId,
-        attempt
-      });
       throw error;
     }
   }
 }
 
-/**
- * runBatchAudit
- * Audits multiple claim elements in a single API call to reduce rate limit issues.
- */
 export async function runBatchAudit(
   elements: { id: string, element: string, evidence: string, reasoning: string }[],
   contextDocs: ContextDoc[] = [],
   customApiKey?: string
 ) {
   const genAI = getGenAI(customApiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   const docsSection = contextDocs.length > 0
-    ? contextDocs.map(doc =>
-      `=== DOCUMENT: "${doc.name}" ===\n${doc.text.substring(0, 8000)}\n`
-    ).join('\n')
+    ? contextDocs.map(doc => `=== DOCUMENT: "${doc.name}" ===\n${doc.text.substring(0, 8000)}\n`).join('\n')
     : '(No reference documents uploaded. Do NOT fabricate any technical specifications.)';
 
   const targetElementsText = elements.map(e => (
@@ -170,7 +217,7 @@ export async function runBatchAudit(
   )).join('\n');
 
   const auditPrompt = `
-You are a Senior Litigation Attorney and AI Quality Auditor. Your job is to audit multiple AI-generated claim chart mappings for legal defensibility.
+You are a Senior Litigation Attorney and AI Quality Auditor. Your job is to audit multiple AI-generated claim chart mappings.
 
 --- UPLOADED REFERENCE DOCUMENTS ---
 ${docsSection}
@@ -179,23 +226,21 @@ ${docsSection}
 ${targetElementsText}
 
 --- AUDIT CRITERIA ---
-1. CITATION ACCURACY: Does the reasoning cite specific § sections? Is the evidence actually in the docs?
-2. HEDGING DETECTOR: Are there words like "likely", "appears", "seems"? (Legally weak)
-3. TECHNICAL PRECISION: Does it use industry-standard terms or vague generalizations?
+1. CITATION ACCURACY: Does it cite specific § sections?
+2. HEDGING DETECTOR: Are there words like "likely", "appears", "seems"?
+3. GROUNDING: If evidence is MISSING, ldsScore MUST be ≤ 30.
 
-Respond with a JSON object containing an array of audit results. Each object in the array must include the "elementId".
-Format:
+Respond with a JSON object:
 {
   "results": [
     {
       "elementId": "string",
       "ldsScore": <number 0-100>,
-      "verdict": "string — PASS, WARNING, or CRITICAL",
-      "auditNotes": "string — specific feedback",
+      "verdict": "PASS | WARNING | CRITICAL",
+      "auditNotes": "string",
       "hedgingDetected": <boolean>,
       "missingCitations": <boolean>
-    },
-    ...
+    }
   ]
 }
 `;
@@ -207,52 +252,23 @@ Format:
     try {
       const result = await model.generateContent(auditPrompt);
       const response = await result.response;
-
-      let text = "";
-      try {
-        text = response.text();
-      } catch (e: any) {
-        console.error("Batch Audit safety block:", {
-          message: e.message,
-          feedback: response.promptFeedback,
-          candidates: response.candidates?.map((c: any) => ({
-            finishReason: c.finishReason,
-            safetyRatings: c.safetyRatings
-          }))
-        });
-        throw new Error(`AI batch response blocked: ${e.message}`);
-      }
-
+      const text = response.text();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch (parseError: any) {
-          console.error("Batch Audit JSON Parse Error:", parseError.message, "Text:", text);
-          throw new Error(`Failed to parse batch audit JSON: ${parseError.message}`);
-        }
+        return JSON.parse(jsonMatch[0]);
       }
-      throw new Error("Failed to extract valid JSON from batch audit response");
-
+      throw new Error("No JSON in audit response");
     } catch (error: any) {
       attempt++;
-      const isWaitable = error.message?.includes('503') || error.status === 503 || error.message?.includes('429') || error.status === 429;
-      if (isWaitable && attempt < maxRetries) {
-        const delay = attempt * 4000;
-        console.warn(`Batch Audit API ${error.status || 'Error'} on attempt ${attempt}. Retrying in ${delay / 1000}s...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 4000));
         continue;
       }
-      console.error('Batch Audit Final Error:', error);
       throw error;
     }
   }
 }
 
-/**
- * AI Audit (LLM-as-a-Judge)
- * Evaluates the reasoning and evidence of a claim element against legal standards.
- */
 export async function runAudit(
   element: string,
   evidence: string,
@@ -261,17 +277,14 @@ export async function runAudit(
   customApiKey?: string
 ) {
   const genAI = getGenAI(customApiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   const docsSection = contextDocs.length > 0
-    ? contextDocs.map(doc =>
-      `=== DOCUMENT: "${doc.name}" ===\n${doc.text.substring(0, 8000)}\n`
-    ).join('\n')
-    : '(No reference documents uploaded. Do NOT fabricate any technical specifications.)';
+    ? contextDocs.map(doc => `=== DOCUMENT: "${doc.name}" ===\n${doc.text.substring(0, 8000)}\n`).join('\n')
+    : '(No reference documents uploaded.)';
 
   const auditPrompt = `
-You are a Senior Litigation Attorney and AI Quality Auditor. Your job is to audit an AI-generated claim chart mapping for legal defensibility.
-
+You are a Senior Litigation Attorney and AI Quality Auditor.
 --- TARGET CLAIM MAPPING ---
 Claim Element: ${element}
 Evidence: ${evidence}
@@ -280,19 +293,16 @@ Reasoning: ${reasoning}
 --- UPLOADED REFERENCE DOCUMENTS ---
 ${docsSection}
 
---- AUDIT CRITERIA ---
-1. CITATION ACCURACY: Does the reasoning cite specific § sections? Is the evidence actually in the docs?
-2. HEDGING DETECTOR: Are there words like "likely", "appears", "seems"? (Legally weak)
-3. TECHNICAL PRECISION: Does it use industry-standard terms or vague generalizations?
-
 Respond with a JSON object:
 {
   "ldsScore": <number 0-100>,
-  "verdict": "string — PASS, WARNING, or CRITICAL",
-  "auditNotes": "string — specific feedback on what is weak or strong",
+  "verdict": "PASS | WARNING | CRITICAL",
+  "auditNotes": "string",
   "hedgingDetected": <boolean>,
   "missingCitations": <boolean>
 }
+
+Note: If evidence is "MISSING", ldsScore MUST be ≤ 30.
 `;
 
   const maxRetries = 3;
@@ -302,56 +312,23 @@ Respond with a JSON object:
     try {
       const result = await model.generateContent(auditPrompt);
       const response = await result.response;
-
-      let text = "";
-      try {
-        text = response.text();
-      } catch (e: any) {
-        console.error("Audit AI safety block or empty response:", {
-          message: e.message,
-          feedback: response.promptFeedback,
-          candidates: response.candidates?.map((c: any) => ({
-            finishReason: c.finishReason,
-            safetyRatings: c.safetyRatings
-          }))
-        });
-        throw new Error(`AI audit response blocked or failed: ${e.message}`);
-      }
-
+      const text = response.text();
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch (parseError: any) {
-          console.error("Audit JSON Parse Error on Gemini response:", parseError.message, "Text:", text);
-          throw new Error(`Failed to parse AI audit JSON: ${parseError.message}`);
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (evidence.includes("MISSING") && parsed.ldsScore > 30) {
+          parsed.ldsScore = 30;
         }
+        return parsed;
       }
-      throw new Error("Failed to extract valid JSON from audit response");
+      throw new Error("No JSON in audit response");
     } catch (error: any) {
       attempt++;
-      const is503 = error.message?.includes('503') || error.status === 503;
-      const is429 = error.message?.includes('429') || error.status === 429;
-
-      if ((is503 || is429) && attempt < maxRetries) {
-        const delay = attempt * 3000;
-        console.warn(`Audit Gemini API ${is429 ? 'Rate Limit (429)' : 'High Demand (503)'} on attempt ${attempt}. Retrying in ${delay / 1000}s...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      if (attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 3000));
         continue;
       }
-
-      console.error('Audit AI Error:', {
-        message: error.message,
-        attempt,
-        element: element.substring(0, 50)
-      });
-
-      return {
-        ldsScore: 0,
-        verdict: 'ERROR',
-        auditNotes: `AI audit failed: ${error.message}${is429 ? ' (Rate Limit reached)' : ''}. Please try again in a few seconds.`
-      };
+      return { ldsScore: 0, verdict: 'ERROR', auditNotes: error.message };
     }
   }
-  return { ldsScore: 0, verdict: 'ERROR', auditNotes: 'Failed to run AI audit after multiple retries.' };
 }

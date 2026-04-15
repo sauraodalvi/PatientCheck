@@ -1,36 +1,37 @@
 # PatientCheck AI 🧬⚖️
 
-**PatientCheck** is an open-source, high-fidelity AI assistant designed for patent professionals, litigation analysts, and legal tech innovators. By bridging the gap between raw legal documents and defensible claim mappings, it transforms the traditionally manual patent audit process into a streamlined, AI-optimized workflow.
+**PatientCheck** is an open-source, high-fidelity AI assistant designed for patent professionals, litigation analysts, and legal tech innovators. By bridging the gap between raw technical documents and defensible claim mappings, it transforms the traditionally manual patent audit process into a streamlined, AI-optimized, and **evidence-aware** workflow.
 
 > [!IMPORTANT]
-> **API Requirement:** This project requires a **Google Gemini API Key** (standardized on `gemini-2.5-flash`). You can provide this in the Mission Control sidebar or via environment variables.
+> **API Requirement:** This project is powered by **Google Gemini 2.0 Flash** for maximum technical precision. You can provide your API key in the Mission Control sidebar (Settings) or via server environment variables.
 
 ---
 
 ## 🚀 The Product Vision
-Built from the perspective of a **Product Manager & AI Builder**, PatientCheck is centered around **Legal Defensibility**. 
+Built from the perspective of a **Product Manager & AI Builder**, PatientCheck is centered around **Legal Defensibility and Technical Grounding**. 
 
-Unlike generic AI tools that simply summarize text, PatientCheck acts as a "Senior Attorney" judge. It identifies hedging language (e.g., "suggests", "appears to"), verifies specific § section citations, and generates a **Legal Defensibility Score (LDS)** to ensure every mapping is courtroom-ready.
+Unlike generic AI tools that simply summarize text, PatientCheck acts as a "Senior Technical Specialist" and "Audit Judge." It eliminates hedging language (e.g., "suggests", "appears to"), enforces strict § section citations, and generates a **Legal Defensibility Score (LDS)** to ensure every mapping is courtroom-ready.
 
 ## ✨ Key Features
-- **📊 AI Quality Scorecard:** Quantitative LDS metrics (0-100%) to instantly identify weak mappings.
-- **🔍 AI Audit Judge:** Automated auditing for citation accuracy, technical precision, and legally weak language.
+- **🛡️ Evidence Arbitration:** Intelligent resolution of conflicting technical specifications across multiple document versions.
+- **📊 AI Quality Scorecard:** Quantitative LDS metrics (0-100%) to instantly identify ungrounded or weak mappings.
+- **🔍 Grounded RAG Search:** High-performance vector indexing for instant evidence retrieval with strict "No Evidence Found" safety rails.
 - **📄 Robust Document Parsing:** Instant extraction of structured claim elements from complex PDF and DOCX files.
-- **💬 Interactive Refinement:** A collaborative AI chat interface with "Suggestion Chips" to iterate on evidence and reasoning.
-- **🔄 Batch Auditing:** High-performance throughput to audit entire claim charts in a single pass.
-- **📂 Professional Export:** One-click generation of refined claim charts into industry-standard DOCX format.
+- **💬 Collaborative Refinement:** An interactive AI chat interface for iterative evidence strengthening and reasoning cleanup.
+- **🔄 Defensive Pipeline:** Automated auditing for citation accuracy, technical precision, and legally weak language.
+- **📂 Professional Export:** One-click generation of refined claim charts into industry-standard, clean DOCX format.
 
-## 🛠️ The Specs (AI Builder Stack)
-- **AI Infrastructure:** Google Gemini 2.5 Flash (utilizing v1beta for advanced reasoning and speed).
-- **Frontend:** React 19 + Vite + Tailwind CSS (featuring a premium glassmorphic/dark-mode UI).
-- **Backend:** Node.js + Express + TypeScript.
-- **UX/Onboarding:** Integrated guided tours via `react-joyride` and real-time interactive diff views.
+## 🛠️ The Tech Stack (AI Builder Perspective)
+- **AI Infrastructure:** Google Gemini 2.0 Flash (`gemini-2.0-flash`) for precise technical reasoning and ultra-fast throughput.
+- **Embeddings:** `text-embedding-004` (optimized for document retrieval and cross-referencing).
+- **Frontend:** React 19 + Vite + Tailwind CSS (featuring a premium glassmorphic/dark-mode "Mission Control" UI).
+- **Backend:** Node.js + Express + TypeScript with memory-mapped vector search.
+- **UX:** Full-state undo/redo history for each element and integrated guided tours via `react-joyride`.
 
 ## 🚦 Getting Started
 
 ### Prerequisites
 - Node.js (v20+)
-- npm / yarn / pnpm
 - Google Gemini API Key ([Get one here](https://aistudio.google.com/))
 
 ### Quick Setup

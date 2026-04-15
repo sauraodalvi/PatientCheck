@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
     Layout, FileText, Upload, MessageSquare, Download, ChevronLeft,
     ChevronRight, X, Loader2, AlertTriangle, Plus, Trash2, BookOpen,
-    RotateCcw, Check, Ban, Send, History, RefreshCw, BarChart3, ShieldCheck, Play, Info
+    RotateCcw, Check, Ban, Send, History, RefreshCw, BarChart3, ShieldCheck, Play, Info,
+    Settings, ChevronDown
 } from 'lucide-react';
 import ClaimTable, { ClaimElement, ChatMessage, ElementVersion } from '../components/ClaimTable';
 import DiffView from '../components/DiffView';
@@ -10,7 +11,8 @@ import ExportWarningModal, { getIssues } from '../components/ExportWarningModal'
 import QualityScorecard from '../components/QualityScorecard';
 import AddReferenceModal from '../components/AddReferenceModal';
 import DemoSelectorModal, { DemoPath } from '../components/DemoSelectorModal';
-import api from '../api';
+import api, { RetrievedChunk, indexDocuments, retrieveEvidence, uploadReferenceDoc } from '../api';
+import RetrievedEvidencePanel from '../components/RetrievedEvidencePanel';
 import Joyride, { Step } from 'react-joyride';
 
 const STORAGE_KEY = 'lumenci_charts_v2';
@@ -162,6 +164,12 @@ const Dashboard: React.FC = () => {
     const [showDemoSelector, setShowDemoSelector] = useState(false);
     const [isValidatingKey, setIsValidatingKey] = useState(false);
     const [keyValidationStatus, setKeyValidationStatus] = useState<'idle' | 'success' | 'error'>('idle');
+    const [retrievedChunks, setRetrievedChunks] = useState<RetrievedChunk[]>([]);
+    const [topScore, setTopScore] = useState(0);
+    const [noEvidenceFound, setNoEvidenceFound] = useState(false);
+    const [lowScoreReason, setLowScoreReason] = useState("");
+    const [isIndexing, setIsIndexing] = useState(false);
+    const [settingsExpanded, setSettingsExpanded] = useState(false);
 
     const chartFileRef = useRef<HTMLInputElement>(null);
     const ctxFileRef = useRef<HTMLInputElement>(null);
@@ -285,6 +293,29 @@ const Dashboard: React.FC = () => {
                         target: '#quality-dashboard-btn',
                         content: 'The Quality Audit will flag this row as "High Risk" due to contradictory citations.',
                         placement: 'bottom'
+                    }
+                ];
+            case 'case-d':
+                return [
+                    {
+                        target: 'body',
+                        content: (
+                            <div className="text-left text-xs">
+                                <p className="font-bold text-purple-600 mb-1">Scenario D: ML Prediction</p>
+                                <p>Modern patent claims often involve ML. Here we see how the AI handles established proof and search results independently.</p>
+                            </div>
+                        ),
+                        placement: 'center',
+                    },
+                    {
+                        target: '#claim-row-1-c',
+                        content: 'Notice this element has "100% confidence". This means the analysis currently in the chart is solid and requires no further refinement.',
+                        placement: 'bottom'
+                    },
+                    {
+                        target: '#reference-docs-section',
+                        content: 'If you click this row, the RAG search might show "No New Evidence" with a 0.00 score. This is normal because the best evidence is already in your chart!',
+                        placement: 'right'
                     }
                 ];
             default:
@@ -418,6 +449,14 @@ const Dashboard: React.FC = () => {
         }));
     }, [updateChart]);
 
+    useEffect(() => {
+        // Reset RAG results when selecting a new element
+        setRetrievedChunks([]);
+        setTopScore(0);
+        setNoEvidenceFound(false);
+        setLowScoreReason("");
+    }, [selectedElementId]);
+
     const pushChatMessage = useCallback((chartId: string, elementId: string, msg: ChatMessage) => {
         updateElement(chartId, elementId, el => ({
             ...el,
@@ -498,27 +537,68 @@ const Dashboard: React.FC = () => {
         }
     };
 
-    // ── Upload reference/context doc ──
-    const handleContextUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (!activeChartId) return;
-        const file = e.target.files?.[0];
-        if (!file) return;
-        setIsUploadingCtx(true);
-        const formData = new FormData();
-        formData.append('file', file);
+    // ── Index Documents for RAG ──
+    const handleIndexDocs = async (chartId: string, docs: ContextDoc[]) => {
+        if (docs.length === 0) return;
+        if (!apiKey || apiKey.trim() === "") {
+            console.warn("[DASHBOARD] Indexing skipped: No Gemini API Key provided.");
+            alert("No API Key detected. Please go to Settings (top right) and provide your Gemini API Key to enable AI document search.");
+            return;
+        }
+        setIsIndexing(true);
         try {
-            const res = await api.post('/api/upload-context', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
-            updateChart(activeChartId, c => ({
-                ...c,
-                contextDocs: [...c.contextDocs.filter(d => d.name !== res.data.doc.name), res.data.doc]
-            }));
-        } catch {
-            alert('Failed to upload reference document.');
+            await indexDocuments(docs, chartId, apiKey);
+            console.log('Indexed documents for session:', chartId);
+        } catch (err: any) {
+            console.error('Indexing failed:', err);
+            const detailMsg = err.response?.data?.details || err.message;
+            alert(`Indexing Failure: ${detailMsg}. This usually occurs due to API quota limits or document size.`);
+        } finally {
+            setIsIndexing(false);
+        }
+    };
+
+    // ── Upload reference/context doc(s) ──
+    const handleContextUpload = async (filesArg: File | File[] | React.ChangeEvent<HTMLInputElement>) => {
+        if (!activeChartId) return;
+
+        let files: File[] = [];
+        if (filesArg instanceof File) {
+            files = [filesArg];
+        } else if (Array.isArray(filesArg)) {
+            files = filesArg;
+        } else {
+            files = Array.from(filesArg.target.files || []);
+        }
+
+        if (files.length === 0) return;
+
+        setIsUploadingCtx(true);
+        try {
+            const res = await uploadReferenceDoc(files);
+            const newDocs: ContextDoc[] = res.docs;
+
+            updateChart(activeChartId, c => {
+                const existingNames = new Set(newDocs.map(d => d.name));
+                return {
+                    ...c,
+                    contextDocs: [...c.contextDocs.filter(d => !existingNames.has(d.name)), ...newDocs]
+                };
+            });
+        } catch (err) {
+            console.error('Context upload error:', err);
+            alert('Failed to upload reference documents.');
         } finally {
             setIsUploadingCtx(false);
             if (ctxFileRef.current) ctxFileRef.current.value = '';
         }
     };
+
+    useEffect(() => {
+        if (activeChartId && contextDocs.length > 0) {
+            handleIndexDocs(activeChartId, contextDocs);
+        }
+    }, [activeChartId, JSON.stringify(contextDocs)]);
 
     // ── Fetch content from URL ──
     const handleUrlSubmit = async (e: React.FormEvent) => {
@@ -660,6 +740,28 @@ const Dashboard: React.FC = () => {
                 content: m.content
             }));
 
+            // 1. RAG Step: Retrieve relevant evidence
+            let currentChunks: RetrievedChunk[] = [];
+            let currentTopScore = 0;
+            let currentNoEvidenceFound = false;
+
+            if (contextDocs.length > 0) {
+                try {
+                    const ragRes = await retrieveEvidence(trimmed, activeChartId!, apiKey);
+                    currentChunks = ragRes.chunks;
+                    currentTopScore = ragRes.topScore;
+                    currentNoEvidenceFound = ragRes.noEvidenceFound;
+
+                    setRetrievedChunks(ragRes.chunks);
+                    setTopScore(ragRes.topScore);
+                    setNoEvidenceFound(ragRes.noEvidenceFound);
+                    setLowScoreReason(ragRes.lowScoreReason);
+                } catch (ragErr) {
+                    console.error('RAG Retrieval failed:', ragErr);
+                }
+            }
+
+            // 2. Refinement Step: Grounded generation
             const res = await api.post('/api/refine', {
                 elementId: selectedElementId,
                 element: currentEl.element,
@@ -667,14 +769,31 @@ const Dashboard: React.FC = () => {
                 reasoning: currentEl.reasoning,
                 query: trimmed,
                 contextDocs: contextDocs,
-                chatHistory: priorHistory.slice(0, -1), // exclude the one we just pushed
+                chatHistory: priorHistory.slice(0, -1),
                 apiKey: apiKey,
-                systemPrompt: systemPrompt
+                systemPrompt: systemPrompt,
+                retrievedChunks: currentChunks,
+                topScore: currentTopScore,
+                noEvidenceFound: currentNoEvidenceFound,
+                hasChartEvidence: !!currentEl.evidence && currentEl.evidence.length > 0 && !currentEl.evidence.includes("MISSING")
             }, {
                 headers: { 'X-Gemini-API-Key': apiKey || '' }
             });
 
-            const { refinedReasoning, refinedEvidence, confidence, flags, explanation, proposedChange, noChangeNeeded } = res.data;
+            const {
+                refinedReasoning, refinedEvidence, confidence, flags,
+                explanation, proposedChange, noChangeNeeded,
+                isConflictResolved, sourceArbitrationDetails
+            } = res.data.refinement;
+
+            // Display arbitration info if resolved
+            if (isConflictResolved && sourceArbitrationDetails) {
+                const arbitrationMsg: ChatMessage = {
+                    role: 'assistant',
+                    content: `⚖️ **Evidence Arbitration Performed**: ${sourceArbitrationDetails}\n\nConfidence adjusted to ${confidence}% to reflect ambiguity resolution.`
+                };
+                pushChatMessage(activeChartId!, selectedElementId!, arbitrationMsg);
+            }
 
             // Check for undo request
             const versionMatch = trimmed.match(/restore version v?(\d+)/i);
@@ -725,9 +844,16 @@ const Dashboard: React.FC = () => {
                 // We use the message index to track — no extra state needed
             } else {
                 // AI gave an explanation without proposing a change (e.g., SC-3, SC-4 Phase 1)
+                let finalExplanation = explanation || 'Analysis complete.';
+                const isLegacyVal = flags.includes("Validated via Existing Evidence");
+
+                if (isLegacyVal && noEvidenceFound) {
+                    finalExplanation = `💡 **Note**: AI is maintaining high confidence based on your existing chart evidence, even though no new supporting text was found in the current document upload.\n\n${finalExplanation}`;
+                }
+
                 const assistantMsg: ChatMessage = {
                     role: 'assistant',
-                    content: explanation || 'Analysis complete.'
+                    content: finalExplanation
                 };
                 // If confidence/flags changed even without a proposed text change, update the element
                 if (flags.length > 0 || confidence < currentEl.confidence) {
@@ -866,6 +992,13 @@ const Dashboard: React.FC = () => {
                     evidence: 'Acme technical docs say "Conflict Resolution V1.2", but marketing says "Automatic Sync".',
                     reasoning: "The technical documentation and marketing materials use different terminology which suggests potential conflict in logic implementation.",
                     confidence: 45, flags: ['Potential documentation conflict detected'], versions: [], chatHistory: []
+                },
+                {
+                    id: '1.c',
+                    element: 'A machine learning inference engine trained on historical occupancy data and user behavioural patterns to predict and pre-adjust temperature setpoints.',
+                    evidence: 'DOC2_TechSpec.docx section 4.2: "The inference engine utilizes a Random Forest model trained on 2 years of occupancy logs to adjust setpoints by ±2°C ahead of scheduled transitions."',
+                    reasoning: "The technical spec explicitly describes a machine learning engine that uses historical data for predictive setpoint adjustment, fulfilling the requirement.",
+                    confidence: 100, flags: [], versions: [], chatHistory: []
                 }
             ];
 
@@ -1096,86 +1229,105 @@ const Dashboard: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Bottom actions refined */}
-                            <div className="mt-auto p-4 bg-white border-t border-[#e1e1e0] space-y-5 rounded-t-xl shadow-[0_-4px_12px_rgba(0,0,0,0.01)] shrink-0 relative z-20">
-                                <div id="system-prompt-container" className="space-y-1.5 relative group">
-                                    <div className="flex items-center gap-1.5 px-1">
-                                        <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">System Instructions</label>
-                                        <div className="group/tip relative translate-y-[-1px]">
-                                            <Info size={11} className="text-[#b0ada7] hover:text-[#37352f] cursor-help transition-colors" />
-                                            <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-[#37352f] text-white text-[10px] rounded-xl opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity z-[100] shadow-2xl leading-relaxed border border-white/10 backdrop-blur-md">
-                                                <div className="font-bold mb-1 opacity-60 uppercase text-[8px] tracking-widest text-blue-300">AI Personality Settings</div>
-                                                In the sidebar, you can tell the AI how to think.
-                                                <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
-                                                    <div>
-                                                        <span className="text-blue-300 font-bold">Patent Attorney?</span><br />
-                                                        Type: <span className="opacity-80 italic">"Be very formal and look for literal infringement."</span>
-                                                    </div>
-                                                    <div>
-                                                        <span className="text-amber-300 font-bold">Electrical Engineer?</span><br />
-                                                        Type: <span className="opacity-80 italic">"Focus only on hardware specs and circuit details."</span>
+                            {/* Mission Control / Settings Collapsible */}
+                            <div className="mt-auto bg-white border-t border-[#e1e1e0] shrink-0 relative z-20">
+                                <button
+                                    onClick={() => setSettingsExpanded(!settingsExpanded)}
+                                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-[#fcfcfb] transition-colors group border-b border-[#e1e1e0]/30"
+                                >
+                                    <div className="flex items-center gap-2">
+                                        <div className="p-1 bg-[#37352f]/5 text-[#37352f] rounded">
+                                            <Settings size={13} />
+                                        </div>
+                                        <span className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Mission Control</span>
+                                    </div>
+                                    <div className={`transition-transform duration-200 ${settingsExpanded ? 'rotate-180' : ''}`}>
+                                        <ChevronDown size={14} className="text-[#b0ada7]" />
+                                    </div>
+                                </button>
+
+                                {settingsExpanded && (
+                                    <div className="px-4 py-4 space-y-5 animate-in slide-in-from-bottom-2 duration-200">
+                                        <div id="system-prompt-container" className="space-y-1.5 relative group">
+                                            <div className="flex items-center gap-1.5 px-1">
+                                                <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">System Instructions</label>
+                                                <div className="group/tip relative translate-y-[-1px]">
+                                                    <Info size={11} className="text-[#b0ada7] hover:text-[#37352f] cursor-help transition-colors" />
+                                                    <div className="absolute left-0 bottom-full mb-2 w-64 p-3 bg-[#37352f] text-white text-[10px] rounded-xl opacity-0 pointer-events-none group-hover/tip:opacity-100 transition-opacity z-[100] shadow-2xl leading-relaxed border border-white/10 backdrop-blur-md">
+                                                        <div className="font-bold mb-1 opacity-60 uppercase text-[8px] tracking-widest text-blue-300">AI Personality Settings</div>
+                                                        In the sidebar, you can tell the AI how to think.
+                                                        <div className="mt-2 space-y-2 border-t border-white/10 pt-2">
+                                                            <div>
+                                                                <span className="text-blue-300 font-bold">Patent Attorney?</span><br />
+                                                                Type: <span className="opacity-80 italic">"Be very formal and look for literal infringement."</span>
+                                                            </div>
+                                                            <div>
+                                                                <span className="text-amber-300 font-bold">Electrical Engineer?</span><br />
+                                                                Type: <span className="opacity-80 italic">"Focus only on hardware specs and circuit details."</span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="absolute top-full left-2 border-4 border-transparent border-t-[#37352f]"></div>
                                                     </div>
                                                 </div>
-                                                <div className="absolute top-full left-2 border-4 border-transparent border-t-[#37352f]"></div>
                                             </div>
-                                        </div>
-                                    </div>
-                                    <textarea
-                                        placeholder="Expert legal analyst..."
-                                        value={systemPrompt}
-                                        onChange={(e) => setSystemPrompt(e.target.value)}
-                                        className="w-full px-2.5 py-2 border border-[#e1e1e0] rounded-lg text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] min-h-[70px] resize-none transition-all placeholder:text-[#b0ada7]"
-                                    />
-                                </div>
-
-                                <form id="api-key-container" className="space-y-1.5" onSubmit={(e) => { e.preventDefault(); handleValidateKey(); }}>
-                                    <div className="flex items-center justify-between px-1">
-                                        <div className="flex items-center gap-1.5">
-                                            <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Gemini API Key</label>
-                                            {keyValidationStatus === 'success' && <Check size={10} className="text-green-600" />}
-                                            {keyValidationStatus === 'error' && <AlertTriangle size={10} className="text-red-500" />}
-                                        </div>
-                                        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
-                                            className="text-[9px] text-blue-600 hover:text-blue-800 hover:underline font-medium">
-                                            Get Key
-                                        </a>
-                                    </div>
-                                    <div className="relative group flex gap-2">
-                                        <div className="relative flex-1">
-                                            <input
-                                                id="api-key-input"
-                                                type="password"
-                                                autoComplete="new-password"
-                                                placeholder="AIzaSy..."
-                                                value={apiKey}
-                                                onChange={(e) => setApiKey(e.target.value)}
-                                                className={`w-full pl-7 pr-2.5 py-2 border rounded-xl text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] transition-all
-                                                    ${keyValidationStatus === 'success' ? 'border-green-200 bg-green-50/10' :
-                                                        keyValidationStatus === 'error' ? 'border-red-200 bg-red-50/10' : 'border-[#e1e1e0]'}`}
+                                            <textarea
+                                                placeholder="Expert legal analyst..."
+                                                value={systemPrompt}
+                                                onChange={(e) => setSystemPrompt(e.target.value)}
+                                                className="w-full px-2.5 py-2 border border-[#e1e1e0] rounded-lg text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] min-h-[70px] resize-none transition-all placeholder:text-[#b0ada7]"
                                             />
-                                            <ShieldCheck size={12} className={`absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors
-                                                ${keyValidationStatus === 'success' ? 'text-green-500' :
-                                                    keyValidationStatus === 'error' ? 'text-red-500' : 'text-[#b0ada7] group-focus-within:text-[#37352f]'}`} />
                                         </div>
-                                        <button
-                                            type="button"
-                                            onClick={handleValidateKey}
-                                            disabled={!apiKey.trim() || isValidatingKey}
-                                            className={`px-3 py-2 rounded-xl text-[10px] font-bold transition-all border
-                                                ${keyValidationStatus === 'success' ? 'bg-green-600 border-green-600 text-white' :
-                                                    keyValidationStatus === 'error' ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100' :
-                                                        'bg-white border-[#e1e1e0] text-[#37352f] hover:bg-[#f7f7f5]'}`}
-                                        >
-                                            {isValidatingKey ? <Loader2 size={12} className="animate-spin" /> :
-                                                keyValidationStatus === 'success' ? 'Verified' : 'Validate'}
-                                        </button>
-                                    </div>
-                                    {keyValidationStatus === 'error' && (
-                                        <p className="text-[9px] text-red-500 px-1 font-medium">Invalid key or server unreachable</p>
-                                    )}
-                                </form>
 
-                                <div id="export-options" className="space-y-3 pt-1">
+                                        <form id="api-key-container" className="space-y-1.5" onSubmit={(e) => { e.preventDefault(); handleValidateKey(); }}>
+                                            <div className="flex items-center justify-between px-1">
+                                                <div className="flex items-center gap-1.5">
+                                                    <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider">Gemini API Key</label>
+                                                    {keyValidationStatus === 'success' && <Check size={10} className="text-green-600" />}
+                                                    {keyValidationStatus === 'error' && <AlertTriangle size={10} className="text-red-500" />}
+                                                </div>
+                                                <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
+                                                    className="text-[9px] text-blue-600 hover:text-blue-800 hover:underline font-medium">
+                                                    Get Key
+                                                </a>
+                                            </div>
+                                            <div className="relative group flex gap-2">
+                                                <div className="relative flex-1">
+                                                    <input
+                                                        id="api-key-input"
+                                                        type="password"
+                                                        autoComplete="new-password"
+                                                        placeholder="AIzaSy..."
+                                                        value={apiKey}
+                                                        onChange={(e) => setApiKey(e.target.value)}
+                                                        className={`w-full pl-7 pr-2.5 py-2 border rounded-xl text-[10px] focus:ring-2 focus:ring-[#37352f]/10 focus:border-[#37352f] outline-none bg-[#fcfcfb] transition-all
+                                                            ${keyValidationStatus === 'success' ? 'border-green-200 bg-green-50/10' :
+                                                                keyValidationStatus === 'error' ? 'border-red-200 bg-red-50/10' : 'border-[#e1e1e0]'}`}
+                                                    />
+                                                    <ShieldCheck size={12} className={`absolute left-2.5 top-1/2 -translate-y-1/2 transition-colors
+                                                        ${keyValidationStatus === 'success' ? 'text-green-500' :
+                                                            keyValidationStatus === 'error' ? 'text-red-500' : 'text-[#b0ada7] group-focus-within:text-[#37352f]'}`} />
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleValidateKey}
+                                                    disabled={!apiKey.trim() || isValidatingKey}
+                                                    className={`px-3 py-2 rounded-xl text-[10px] font-bold transition-all border
+                                                        ${keyValidationStatus === 'success' ? 'bg-green-600 border-green-600 text-white' :
+                                                            keyValidationStatus === 'error' ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100' :
+                                                                'bg-white border-[#e1e1e0] text-[#37352f] hover:bg-[#f7f7f5]'}`}
+                                                >
+                                                    {isValidatingKey ? <Loader2 size={12} className="animate-spin" /> :
+                                                        keyValidationStatus === 'success' ? 'Verified' : 'Validate'}
+                                                </button>
+                                            </div>
+                                            {keyValidationStatus === 'error' && (
+                                                <p className="text-[9px] text-red-500 px-1 font-medium">Invalid key or server unreachable</p>
+                                            )}
+                                        </form>
+                                    </div>
+                                )}
+
+                                <div id="export-options" className="px-4 pb-4 space-y-3 pt-4 border-t border-[#e1e1e0]/30 shadow-[0_-4px_12px_rgba(0,0,0,0.01)]">
                                     <label className="text-[10px] font-bold text-[#7a776e] uppercase tracking-wider px-1">Project Actions</label>
                                     <div className="space-y-2">
                                         <button onClick={() => chartFileRef.current?.click()}
@@ -1185,7 +1337,7 @@ const Dashboard: React.FC = () => {
                                         <button onClick={handleExportClick}
                                             disabled={!activeChart}
                                             className={`w-full flex items-center justify-center gap-2 p-2.5 bg-white border border-[#e1e1e0] text-[#37352f] rounded-xl hover:bg-[#f7f7f5] transition-all text-xs font-bold active:scale-[0.98]
-                                                ${!activeChart ? 'opacity-40 cursor-not-allowed border-dashed grayscale' : ''}`}>
+                                            ${!activeChart ? 'opacity-40 cursor-not-allowed border-dashed grayscale' : ''}`}>
                                             {isExporting ? <Loader2 size={14} className="animate-spin text-[#7a776e]" /> : <Download size={14} />}
                                             Export DOCX
                                         </button>
@@ -1286,9 +1438,8 @@ const Dashboard: React.FC = () => {
                     <AddReferenceModal
                         isOpen={isAddRefModalOpen}
                         onClose={() => setIsAddRefModalOpen(false)}
-                        onUploadFile={async (file) => {
-                            // Manual file injection to trigger existing handler
-                            handleContextUpload({ target: { files: [file] } } as any);
+                        onUploadFile={async (files) => {
+                            handleContextUpload(files);
                         }}
                         onAddUrl={async (url) => {
                             try {
@@ -1384,12 +1535,17 @@ const Dashboard: React.FC = () => {
                                     <span className="text-[10px] font-semibold text-[#7a776e] uppercase tracking-wider">
                                         Element {selectedElement.id}
                                     </span>
-                                    <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded
-                                        ${selectedElement.confidence >= 80 ? 'bg-green-100 text-green-700'
-                                            : selectedElement.confidence >= 50 ? 'bg-yellow-100 text-yellow-700'
-                                                : 'bg-red-100 text-red-700'}`}>
-                                        {selectedElement.confidence}% confidence
-                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded
+                                            ${selectedElement.confidence >= 80 ? 'bg-green-100 text-green-700'
+                                                : selectedElement.confidence >= 50 ? 'bg-yellow-100 text-yellow-700'
+                                                    : 'bg-red-100 text-red-700'}`}>
+                                            {selectedElement.confidence}% confidence
+                                        </span>
+                                        <div title="This represents the AI's confidence in the current reasoning and evidence stored in the table for this element.">
+                                            <Info size={12} className="text-[#a8a598] cursor-help" />
+                                        </div>
+                                    </div>
                                 </div>
                                 <p className="text-[11px] text-[#37352f] line-clamp-2">{selectedElement.element}</p>
                                 {selectedElement.flags && selectedElement.flags.length > 0 && (
@@ -1401,6 +1557,20 @@ const Dashboard: React.FC = () => {
                                         ))}
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {/* RAG Evidence Panel */}
+                        {selectedElement && (
+                            <div className="px-3 border-b border-[#e1e1e0] bg-white shrink-0 scroll-pt-2 overflow-y-auto max-h-[40%] custom-scrollbar">
+                                <RetrievedEvidencePanel
+                                    chunks={retrievedChunks}
+                                    topScore={topScore}
+                                    noEvidenceFound={noEvidenceFound}
+                                    hasChartEvidence={!!selectedElement.evidence && selectedElement.evidence.length > 0 && !selectedElement.evidence.includes("MISSING")}
+                                    lowScoreReason={lowScoreReason}
+                                    onSnippetClick={(text) => setChatInput(prev => `${prev}\n\n[Snipped]: "${text}"`)}
+                                />
                             </div>
                         )}
 
@@ -1540,7 +1710,7 @@ const Dashboard: React.FC = () => {
 
             {/* Hidden inputs */}
             <input type="file" ref={chartFileRef} onChange={handleChartUpload} className="hidden" accept=".pdf,.docx" />
-            <input type="file" ref={ctxFileRef} onChange={handleContextUpload} className="hidden" accept=".pdf,.docx" />
+            <input type="file" ref={ctxFileRef} multiple onChange={handleContextUpload} className="hidden" accept=".pdf,.docx" />
             <input type="file" ref={jsonFileRef} onChange={handleUploadState} className="hidden" accept=".json" />
 
             {
