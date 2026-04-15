@@ -1,0 +1,9 @@
+server/
+netlify/
+Test/
+render.yaml
+netlify.toml
+server/diagnose-embed.js
+Test/verify-indexing.js
+README.md
+CLAUDE.md
