@@ -1,7 +1,7 @@
 import React from 'react';
-import { Play, X, Info, CircleCheckBig, HelpCircle, AlertCircle } from 'lucide-react';
+import { Play, X, Info, CircleCheckBig, HelpCircle, AlertCircle, ShieldCheck } from 'lucide-react';
 
-export type DemoPath = 'overview' | 'case-a' | 'case-b' | 'case-c';
+export type DemoPath = 'overview' | 'case-a' | 'case-b' | 'case-c' | 'case-d';
 
 interface DemoSelectorModalProps {
     isOpen: boolean;
@@ -99,6 +99,24 @@ const DemoSelectorModal: React.FC<DemoSelectorModalProps> = ({ isOpen, onClose, 
                         </div>
                         <p className="text-xs leading-relaxed text-[#7a776e] mb-4">Discover how to handle and flag contradictory citations between different source docs.</p>
                         <div className="mt-auto flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-orange-600">
+                            <Play size={12} fill="currentColor" strokeWidth={2} />
+                            Start Walkthrough
+                        </div>
+                    </button>
+
+                    {/* Scenario D */}
+                    <button
+                        onClick={() => onSelectDemo('case-d')}
+                        className="flex flex-col p-5 rounded-xl border text-left transition-all group relative overflow-hidden text-purple-600 bg-purple-50 border-purple-100"
+                    >
+                        <div className="flex items-center gap-3 mb-3">
+                            <div className="p-2 rounded-lg bg-white/80 transition-transform text-purple-600">
+                                <ShieldCheck size={20} />
+                            </div>
+                            <h3 className="font-bold text-sm text-[#37352f]">Scenario D: ML Prediction</h3>
+                        </div>
+                        <p className="text-xs leading-relaxed text-[#7a776e] mb-4">Explore complex ML elements with high confidence but no new evidence matches.</p>
+                        <div className="mt-auto flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-purple-600">
                             <Play size={12} fill="currentColor" strokeWidth={2} />
                             Start Walkthrough
                         </div>
